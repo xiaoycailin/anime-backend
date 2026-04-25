@@ -22,4 +22,19 @@ npx prisma generate
 echo "Building backend..."
 npm run build
 
-echo "Backend build complete. Service not started."
+echo "Starting backend with PM2..."
+if ! command -v pm2 >/dev/null 2>&1; then
+	npm install -g pm2
+fi
+
+APP_NAME="anime-api"
+APP_PORT="3301"
+
+if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
+	PORT="$APP_PORT" pm2 restart "$APP_NAME" --update-env
+else
+	PORT="$APP_PORT" pm2 start npm --name "$APP_NAME" -- run start
+fi
+
+pm2 save
+echo "Backend service '$APP_NAME' is running on port $APP_PORT."
