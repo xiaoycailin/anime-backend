@@ -249,29 +249,36 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       data.avatar = body.avatar;
     }
 
-    const user = await prisma.user.update({
-      where: { id: request.user.id },
-      data,
-      select: {
-        id: true,
-        email: true,
-        username: true,
-        avatar: true,
-        role: true,
-        isVerified: true,
-        createdAt: true,
-        exp: true,
-        level: true,
-        lastExpGainAt: true,
-      },
-    });
+    try {
+      const user = await prisma.user.update({
+        where: { id: request.user.id },
+        data,
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          avatar: true,
+          role: true,
+          isVerified: true,
+          createdAt: true,
+          exp: true,
+          level: true,
+          lastExpGainAt: true,
+        },
+      });
 
-    const equipped = await getEquippedDecorations(user.id);
+      const equipped = await getEquippedDecorations(user.id);
 
-    return ok(reply, {
-      message: "Profile updated",
-      data: publicUser(user, equipped),
-    });
+      return ok(reply, {
+        message: "Profile updated",
+        data: publicUser(user, equipped),
+      });
+    } catch (error) {
+      if ((error as any).code === "P2002") {
+        throw badRequest("Username already exists");
+      }
+      throw badRequest("Gagal memperbarui profile", error);
+    }
   });
 
   app.put(
