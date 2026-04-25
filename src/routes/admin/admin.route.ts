@@ -20,6 +20,7 @@ import {
 import { calculateLevel } from "../../services/exp.service";
 import { badRequest, notFound } from "../../utils/http-error";
 import { created, ok, paginated } from "../../utils/response";
+import { CacheInvalidator } from "../../lib/cache";
 
 type PaginationQuery = {
   page?: string;
@@ -519,6 +520,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       include: { genres: { include: { genre: true } } },
     });
 
+    await CacheInvalidator.onAnimeChange(anime.slug);
+
     await Promise.all([
       createBroadcastNotification({
         category: "content_new",
@@ -557,6 +560,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/anime/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const body = request.body as AnimeBody;
+    const previous = await prisma.anime.findUnique({
+      where: { id },
+      select: { slug: true },
+    });
     await prisma.anime.update({
       where: { id },
       data: cleanAnimeData(body) as any,
@@ -566,12 +573,25 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       where: { id },
       include: { genres: { include: { genre: true } } },
     });
+
+    await Promise.all([
+      CacheInvalidator.onAnimeChange(anime?.slug ?? null),
+      previous?.slug && previous.slug !== anime?.slug
+        ? CacheInvalidator.onAnimeChange(previous.slug)
+        : Promise.resolve(),
+    ]);
+
     return ok(reply, { data: anime });
   });
 
   app.delete("/anime/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
+    const existing = await prisma.anime.findUnique({
+      where: { id },
+      select: { slug: true },
+    });
     await prisma.anime.delete({ where: { id } });
+    await CacheInvalidator.onAnimeChange(existing?.slug ?? null);
     return ok(reply, { data: { message: "deleted" } });
   });
 
@@ -580,6 +600,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const result = await prisma.anime.deleteMany({
       where: { id: { in: ids } },
     });
+    await CacheInvalidator.onBulkAnimeChange();
     return ok(reply, { data: { deleted: result.count } });
   });
 
@@ -620,6 +641,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         anime: { select: { id: true, title: true, slug: true } },
       },
     });
+
+    await CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug);
 
     await Promise.all([
       createBroadcastNotification({
@@ -679,16 +702,40 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   app.put("/episodes/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
+    const previous = await prisma.episode.findUnique({
+      where: { id },
+      select: { slug: true, anime: { select: { slug: true } } },
+    });
     const episode = await prisma.episode.update({
       where: { id },
       data: cleanEpisodeData(request.body as EpisodeBody) as any,
+      include: { anime: { select: { slug: true } } },
     });
+
+    await Promise.all([
+      CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug),
+      previous && previous.slug !== episode.slug
+        ? CacheInvalidator.onEpisodeChange(
+            previous.anime?.slug ?? null,
+            previous.slug,
+          )
+        : Promise.resolve(),
+    ]);
+
     return ok(reply, { data: episode });
   });
 
   app.delete("/episodes/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
+    const existing = await prisma.episode.findUnique({
+      where: { id },
+      select: { slug: true, anime: { select: { slug: true } } },
+    });
     await prisma.episode.delete({ where: { id } });
+    await CacheInvalidator.onEpisodeChange(
+      existing?.anime?.slug ?? null,
+      existing?.slug ?? null,
+    );
     return ok(reply, { data: { message: "deleted" } });
   });
 
@@ -736,6 +783,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         },
         createdById: request.user.id,
       });
+
+      await CacheInvalidator.onEpisodeChange(episode.anime.slug);
     }
 
     return created(reply, { data: server });
@@ -744,7 +793,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/servers/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const body = request.body as ServerBody;
-    const existing = await prisma.server.findUnique({ where: { id } });
+    const existing = await prisma.server.findUnique({
+      where: { id },
+      include: {
+        episode: { select: { slug: true, anime: { select: { slug: true } } } },
+      },
+    });
     if (!existing) throw notFound("Server tidak ditemukan");
     const server = await prisma.$transaction(async (tx) => {
       const updated = await tx.server.update({
@@ -763,12 +817,23 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }
       return updated;
     });
+
+    await CacheInvalidator.onEpisodeChange(
+      existing.episode?.anime?.slug ?? null,
+      existing.episode?.slug ?? null,
+    );
+
     return ok(reply, { data: server });
   });
 
   app.delete("/servers/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const existing = await prisma.server.findUnique({ where: { id } });
+    const existing = await prisma.server.findUnique({
+      where: { id },
+      include: {
+        episode: { select: { slug: true, anime: { select: { slug: true } } } },
+      },
+    });
     if (!existing) throw notFound("Server tidak ditemukan");
     await prisma.$transaction([
       prisma.subtitle.deleteMany({
@@ -779,6 +844,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }),
       prisma.server.delete({ where: { id } }),
     ]);
+
+    await CacheInvalidator.onEpisodeChange(
+      existing.episode?.anime?.slug ?? null,
+      existing.episode?.slug ?? null,
+    );
+
     return ok(reply, { data: { message: "deleted" } });
   });
 
@@ -814,6 +885,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         },
         createdById: request.user.id,
       });
+
+      await CacheInvalidator.onEpisodeChange(episode.anime.slug);
     }
     return created(reply, { data: subtitle });
   });
@@ -844,13 +917,28 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         },
         createdById: request.user.id,
       });
+
+      await CacheInvalidator.onEpisodeChange(episode.anime.slug);
     }
     return ok(reply, { data: subtitle });
   });
 
   app.delete("/subtitles/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    return ok(reply, { data: await deleteSubtitle(id) });
+    const existing = await prisma.subtitle.findUnique({
+      where: { id },
+      include: {
+        episode: { select: { slug: true, anime: { select: { slug: true } } } },
+      },
+    });
+    const result = await deleteSubtitle(id);
+    if (existing) {
+      await CacheInvalidator.onEpisodeChange(
+        existing.episode?.anime?.slug ?? null,
+        existing.episode?.slug ?? null,
+      );
+    }
+    return ok(reply, { data: result });
   });
 
   app.post("/subtitles/import", async (request, reply) => {

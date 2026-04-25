@@ -12,6 +12,14 @@ import {
   isSameAnime,
   normalizeTitle,
 } from "../../utils/season-parser";
+import {
+  CACHE_KEYS,
+  CACHE_TTL,
+  CacheInvalidator,
+  buildQueryKey,
+  getCache,
+  setCache,
+} from "../../lib/cache";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -437,54 +445,87 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const where: Prisma.AnimeWhereInput =
       filters.length > 0 ? { AND: filters } : {};
 
+    const cacheKey = CACHE_KEYS.browse(
+      buildQueryKey({
+        keyword,
+        genres,
+        tags,
+        status,
+        type,
+        studio,
+        sortBy,
+        order,
+        page,
+        limit,
+      }),
+    );
+
     try {
-      const [total, animes] = await Promise.all([
-        prisma.anime.count({ where }),
-        prisma.anime.findMany({
-          where,
-          orderBy: buildOrderBy(sortBy, order),
-          skip,
-          take: limit,
-          select: {
-            id: true,
-            slug: true,
-            title: true,
-            thumbnail: true,
-            bigCover: true,
-            status: true,
-            type: true,
-            studio: true,
-            rating: true,
-            followed: true,
-            totalEpisodes: true,
-            genres: {
+      type BrowsePayload = {
+        items: ReturnType<typeof formatAnimeCard>[];
+        total: number;
+      };
+
+      const cached = await getCache<BrowsePayload>(cacheKey);
+      const payload =
+        cached ??
+        (await (async (): Promise<BrowsePayload> => {
+          const [total, animes] = await Promise.all([
+            prisma.anime.count({ where }),
+            prisma.anime.findMany({
+              where,
+              orderBy: buildOrderBy(sortBy, order),
+              skip,
+              take: limit,
               select: {
-                genre: {
+                id: true,
+                slug: true,
+                title: true,
+                thumbnail: true,
+                bigCover: true,
+                status: true,
+                type: true,
+                studio: true,
+                rating: true,
+                followed: true,
+                totalEpisodes: true,
+                genres: {
                   select: {
-                    name: true,
+                    genre: {
+                      select: {
+                        name: true,
+                      },
+                    },
+                  },
+                },
+                _count: {
+                  select: {
+                    episodes: true,
                   },
                 },
               },
-            },
-            _count: {
-              select: {
-                episodes: true,
-              },
-            },
-          },
-        }),
-      ]);
+            }),
+          ]);
+
+          const result: BrowsePayload = {
+            items: animes.map((anime) =>
+              formatAnimeCard(anime, {
+                includeBigCover: true,
+                includeStats: true,
+              }),
+            ),
+            total,
+          };
+
+          await setCache(cacheKey, result, CACHE_TTL.BROWSE);
+          return result;
+        })());
 
       return paginated(reply, {
-        items: animes.map((anime) =>
-          formatAnimeCard(anime, {
-            includeBigCover: true,
-            includeStats: true,
-          }),
-        ),
+        items: payload.items,
         page,
         limit,
-        total,
+        total: payload.total,
         message: "Anime list fetched successfully",
         meta: {
           keyword: keyword || null,
@@ -495,6 +536,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           studio: studio || null,
           sortBy,
           order,
+          cache: cached ? "hit" : "miss",
         },
       });
     } catch (error) {
@@ -510,8 +552,28 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/new-release", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 12), 50);
+    const cacheKey = CACHE_KEYS.newRelease(limit);
 
     try {
+      type NewReleaseItem = {
+        id: number;
+        slug: string;
+        title: string;
+        genre: string[];
+        thumbnail: string;
+        status: "Ongoing" | "Completed";
+      };
+
+      const cached = await getCache<NewReleaseItem[]>(cacheKey);
+
+      if (cached) {
+        return ok(reply, {
+          message: "New release anime fetched successfully",
+          data: cached,
+          meta: { limit, cache: "hit" },
+        });
+      }
+
       // Rank anime by most recent activity:
       // whichever is newer between the anime's own createdAt and its latest episode's createdAt.
       const ranked = await prisma.$queryRaw<{ id: number }[]>`
@@ -526,10 +588,11 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       const ids = ranked.map((r) => Number(r.id));
 
       if (ids.length === 0) {
+        await setCache(cacheKey, [], CACHE_TTL.NEW_RELEASE);
         return ok(reply, {
           message: "New release anime fetched successfully",
           data: [],
-          meta: { limit },
+          meta: { limit, cache: "miss" },
         });
       }
 
@@ -559,17 +622,21 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         .map((id) => animeMap.get(id))
         .filter((a): a is NonNullable<typeof a> => Boolean(a));
 
+      const data: NewReleaseItem[] = orderedAnimes.map((anime) => ({
+        id: anime.id,
+        slug: anime.slug,
+        title: normalizeTitle(anime.title),
+        genre: anime.genres.map((item) => item.genre.name),
+        thumbnail: anime.thumbnail ?? "",
+        status: toAnimeStatus(anime.status),
+      }));
+
+      await setCache(cacheKey, data, CACHE_TTL.NEW_RELEASE);
+
       return ok(reply, {
         message: "New release anime fetched successfully",
-        data: orderedAnimes.map((anime) => ({
-          id: anime.id,
-          slug: anime.slug,
-          title: normalizeTitle(anime.title),
-          genre: anime.genres.map((item) => item.genre.name),
-          thumbnail: anime.thumbnail ?? "",
-          status: toAnimeStatus(anime.status),
-        })),
-        meta: { limit },
+        data,
+        meta: { limit, cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);
@@ -584,8 +651,25 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/popular", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 12), 50);
+    const cacheKey = CACHE_KEYS.popular(limit);
 
     try {
+      const cached = await getCache<ReturnType<typeof formatAnimeCard>[]>(
+        cacheKey,
+      );
+
+      if (cached) {
+        return ok(reply, {
+          message: "Popular anime fetched successfully",
+          data: cached,
+          meta: {
+            limit,
+            ranking: ["followed desc", "rating desc", "updatedAt desc"],
+            cache: "hit",
+          },
+        });
+      }
+
       const animes = await prisma.anime.findMany({
         orderBy: [
           { followed: "desc" },
@@ -622,17 +706,22 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const data = animes.map((anime) =>
+        formatAnimeCard(anime, {
+          includeBigCover: true,
+          includeStats: true,
+        }),
+      );
+
+      await setCache(cacheKey, data, CACHE_TTL.POPULAR);
+
       return ok(reply, {
         message: "Popular anime fetched successfully",
-        data: animes.map((anime) =>
-          formatAnimeCard(anime, {
-            includeBigCover: true,
-            includeStats: true,
-          }),
-        ),
+        data,
         meta: {
           limit,
           ranking: ["followed desc", "rating desc", "updatedAt desc"],
+          cache: "miss",
         },
       });
     } catch (error) {
@@ -648,8 +737,32 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/trending", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 9), 50);
+    const cacheKey = CACHE_KEYS.trending(limit);
 
     try {
+      const cached = await getCache<ReturnType<typeof formatAnimeCard>[]>(
+        cacheKey,
+      );
+
+      if (cached) {
+        return ok(reply, {
+          message: "Trending anime fetched successfully",
+          data: cached,
+          meta: {
+            limit,
+            ranking: [
+              "trendingScore desc",
+              "views desc",
+              "likes desc",
+              "updatedAt desc",
+            ],
+            formula:
+              "(views * 0.6 + likes * 2) / (hours_since_created + 2)^1.5",
+            cache: "hit",
+          },
+        });
+      }
+
       const animes = await prisma.anime.findMany({
         orderBy: [
           { trendingScore: "desc" },
@@ -690,14 +803,18 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const data = animes.map((anime) =>
+        formatAnimeCard(anime, {
+          includeBigCover: true,
+          includeStats: true,
+        }),
+      );
+
+      await setCache(cacheKey, data, CACHE_TTL.TRENDING);
+
       return ok(reply, {
         message: "Trending anime fetched successfully",
-        data: animes.map((anime) =>
-          formatAnimeCard(anime, {
-            includeBigCover: true,
-            includeStats: true,
-          }),
-        ),
+        data,
         meta: {
           limit,
           ranking: [
@@ -707,6 +824,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
             "updatedAt desc",
           ],
           formula: "(views * 0.6 + likes * 2) / (hours_since_created + 2)^1.5",
+          cache: "miss",
         },
       });
     } catch (error) {
@@ -831,6 +949,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
 
         const updated = await recalculateTrendingScore(anime.id);
 
+        await CacheInvalidator.onAnimeChange(slug);
+
         return ok(reply, {
           message: "Anime liked successfully",
           data: {
@@ -899,6 +1019,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         }
 
         const updated = await recalculateTrendingScore(anime.id);
+
+        await CacheInvalidator.onAnimeChange(slug);
 
         return ok(reply, {
           message: "Anime unliked successfully",
@@ -1009,7 +1131,21 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/genres", async (request, reply) => {
+    const cacheKey = CACHE_KEYS.genres();
+
     try {
+      const cached = await getCache<
+        { id: number; name: string; animeCount: number }[]
+      >(cacheKey);
+
+      if (cached) {
+        return ok(reply, {
+          message: "Anime genres fetched successfully",
+          data: cached,
+          meta: { cache: "hit" },
+        });
+      }
+
       const genres = await prisma.genre.findMany({
         orderBy: { name: "asc" },
         select: {
@@ -1023,13 +1159,18 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const data = genres.map((genre) => ({
+        id: genre.id,
+        name: genre.name,
+        animeCount: genre._count.animes,
+      }));
+
+      await setCache(cacheKey, data, CACHE_TTL.GENRES);
+
       return ok(reply, {
         message: "Anime genres fetched successfully",
-        data: genres.map((genre) => ({
-          id: genre.id,
-          name: genre.name,
-          animeCount: genre._count.animes,
-        })),
+        data,
+        meta: { cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);
@@ -1143,6 +1284,17 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const page = toPositiveInt(query.page, 1);
     const limit = Math.min(toPositiveInt(query.limit, 12), 50);
     const skip = (page - 1) * limit;
+    const cacheKey = CACHE_KEYS.search(
+      buildQueryKey({
+        keyword,
+        genres,
+        status,
+        sortBy,
+        order,
+        page,
+        limit,
+      }),
+    );
 
     const filters: Prisma.AnimeWhereInput[] = [];
 
@@ -1189,44 +1341,69 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       filters.length > 0 ? { AND: filters } : {};
 
     try {
-      const [total, animes] = await Promise.all([
-        prisma.anime.count({ where }),
-        prisma.anime.findMany({
-          where,
-          orderBy: buildOrderBy(sortBy, order),
-          skip,
-          take: limit,
-          select: {
-            id: true,
-            slug: true,
-            title: true,
-            thumbnail: true,
-            status: true,
-            genres: {
+      type SearchPayload = {
+        items: {
+          id: number;
+          slug: string;
+          title: string;
+          genre: string[];
+          thumbnail: string;
+          status: "Ongoing" | "Completed";
+        }[];
+        total: number;
+      };
+
+      const cached = await getCache<SearchPayload>(cacheKey);
+      const payload =
+        cached ??
+        (await (async (): Promise<SearchPayload> => {
+          const [total, animes] = await Promise.all([
+            prisma.anime.count({ where }),
+            prisma.anime.findMany({
+              where,
+              orderBy: buildOrderBy(sortBy, order),
+              skip,
+              take: limit,
               select: {
-                genre: {
+                id: true,
+                slug: true,
+                title: true,
+                thumbnail: true,
+                status: true,
+                genres: {
                   select: {
-                    name: true,
+                    genre: {
+                      select: {
+                        name: true,
+                      },
+                    },
                   },
                 },
               },
-            },
-          },
-        }),
-      ]);
+            }),
+          ]);
+
+          const result: SearchPayload = {
+            items: animes.map((anime) => ({
+              id: anime.id,
+              slug: anime.slug,
+              title: normalizeTitle(anime.title),
+              genre: anime.genres.map((item) => item.genre.name),
+              thumbnail: anime.thumbnail ?? "",
+              status: toAnimeStatus(anime.status),
+            })),
+            total,
+          };
+
+          await setCache(cacheKey, result, CACHE_TTL.SEARCH);
+          return result;
+        })());
 
       return paginated(reply, {
-        items: animes.map((anime) => ({
-          id: anime.id,
-          slug: anime.slug,
-          title: normalizeTitle(anime.title),
-          genre: anime.genres.map((item) => item.genre.name),
-          thumbnail: anime.thumbnail ?? "",
-          status: toAnimeStatus(anime.status),
-        })),
+        items: payload.items,
         page,
         limit,
-        total,
+        total: payload.total,
         message: "Anime search fetched successfully",
         meta: {
           keyword: keyword || null,
@@ -1234,6 +1411,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           status,
           sortBy,
           order,
+          cache: cached ? "hit" : "miss",
         },
       });
     } catch (error) {
@@ -1260,7 +1438,18 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    const cacheKey = CACHE_KEYS.episodeDetail(animeSlug, episodeSlug);
+
     try {
+      const cached = await getCache<Record<string, unknown>>(cacheKey);
+      if (cached) {
+        return ok(reply, {
+          message: "Episode detail fetched successfully",
+          data: cached,
+          meta: { cache: "hit" },
+        });
+      }
+
       const episode = await prisma.episode.findFirst({
         where: {
           slug: episodeSlug,
@@ -1595,41 +1784,46 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           }) => anime,
         );
 
+      const responseData = {
+        id: episode.id,
+        slug: episode.slug,
+        number: episode.number,
+        title: episode.title,
+        sub: episode.sub,
+        date: episode.date,
+        views: episode.views,
+        skipIntroSeconds: episode.skipIntroSeconds,
+        episodes: episode.anime.episodes,
+        seasons,
+        anime: {
+          id: episode.anime.id,
+          slug: episode.anime.slug,
+          title: normalizeTitle(episode.anime.title),
+          thumbnail: episode.anime.thumbnail ?? "",
+          bigCover: episode.anime.bigCover ?? "",
+          status: episode.anime.status,
+          studio: episode.anime.studio,
+          type: episode.anime.type,
+          totalEpisodes: episode.anime.totalEpisodes,
+          genres: currentGenres,
+          tags: episode.anime.tags.map((item) => item.tag),
+        },
+        servers: episode.servers,
+        subtitles: episode.subtitles,
+        subtitleTracks: episode.subtitleTracks,
+        navigation: {
+          previous: previousEpisode,
+          next: nextEpisode,
+        },
+        relatedVideos,
+      };
+
+      await setCache(cacheKey, responseData, CACHE_TTL.EPISODE_DETAIL);
+
       return ok(reply, {
         message: "Episode detail fetched successfully",
-        data: {
-          id: episode.id,
-          slug: episode.slug,
-          number: episode.number,
-          title: episode.title,
-          sub: episode.sub,
-          date: episode.date,
-          views: episode.views,
-          skipIntroSeconds: episode.skipIntroSeconds,
-          episodes: episode.anime.episodes,
-          seasons,
-          anime: {
-            id: episode.anime.id,
-            slug: episode.anime.slug,
-            title: normalizeTitle(episode.anime.title),
-            thumbnail: episode.anime.thumbnail ?? "",
-            bigCover: episode.anime.bigCover ?? "",
-            status: episode.anime.status,
-            studio: episode.anime.studio,
-            type: episode.anime.type,
-            totalEpisodes: episode.anime.totalEpisodes,
-            genres: currentGenres,
-            tags: episode.anime.tags.map((item) => item.tag),
-          },
-          servers: episode.servers,
-          subtitles: episode.subtitles,
-          subtitleTracks: episode.subtitleTracks,
-          navigation: {
-            previous: previousEpisode,
-            next: nextEpisode,
-          },
-          relatedVideos,
-        },
+        data: responseData,
+        meta: { cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);
@@ -1654,7 +1848,18 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    const cacheKey = CACHE_KEYS.animeDetail(slug);
+
     try {
+      const cached = await getCache<Record<string, unknown>>(cacheKey);
+      if (cached) {
+        return ok(reply, {
+          message: "Anime detail fetched successfully",
+          data: cached,
+          meta: { cache: "hit" },
+        });
+      }
+
       const anime = await prisma.anime.findUnique({
         where: { slug },
         select: {
@@ -1753,38 +1958,43 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const responseData = {
+        id: anime.id,
+        slug: anime.slug,
+        title: normalizeTitle(anime.title),
+        thumbnail: anime.thumbnail ?? "",
+        bigCover: anime.bigCover ?? "",
+        rating: anime.rating ? Number(anime.rating) : null,
+        alternativeTitles: anime.alternativeTitles,
+        synopsis: anime.synopsis,
+        followed: anime.followed,
+        views: anime.views,
+        likes: anime.likes,
+        trendingScore: anime.trendingScore,
+        status: anime.status,
+        network: anime.network,
+        studio: anime.studio,
+        released: anime.released,
+        duration: anime.duration,
+        season: anime.season,
+        country: anime.country,
+        type: anime.type,
+        totalEpisodes: anime.totalEpisodes,
+        fansub: anime.fansub,
+        genres: anime.genres.map((item) => item.genre.name),
+        tags: anime.tags.map((item) => item.tag),
+        episodes: anime.episodes,
+        seasons,
+        createdAt: anime.createdAt,
+        updatedAt: anime.updatedAt,
+      };
+
+      await setCache(cacheKey, responseData, CACHE_TTL.ANIME_DETAIL);
+
       return ok(reply, {
         message: "Anime detail fetched successfully",
-        data: {
-          id: anime.id,
-          slug: anime.slug,
-          title: normalizeTitle(anime.title),
-          thumbnail: anime.thumbnail ?? "",
-          bigCover: anime.bigCover ?? "",
-          rating: anime.rating ? Number(anime.rating) : null,
-          alternativeTitles: anime.alternativeTitles,
-          synopsis: anime.synopsis,
-          followed: anime.followed,
-          views: anime.views,
-          likes: anime.likes,
-          trendingScore: anime.trendingScore,
-          status: anime.status,
-          network: anime.network,
-          studio: anime.studio,
-          released: anime.released,
-          duration: anime.duration,
-          season: anime.season,
-          country: anime.country,
-          type: anime.type,
-          totalEpisodes: anime.totalEpisodes,
-          fansub: anime.fansub,
-          genres: anime.genres.map((item) => item.genre.name),
-          tags: anime.tags.map((item) => item.tag),
-          episodes: anime.episodes,
-          seasons,
-          createdAt: anime.createdAt,
-          updatedAt: anime.updatedAt,
-        },
+        data: responseData,
+        meta: { cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);

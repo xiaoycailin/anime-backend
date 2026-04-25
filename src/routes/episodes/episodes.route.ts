@@ -5,6 +5,7 @@ import { addExp } from "../../services/exp.service";
 import { ok, sendError } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import { normalizeTitle } from "../../utils/season-parser";
+import { CACHE_KEYS, CACHE_TTL, getCache, setCache } from "../../lib/cache";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -60,8 +61,27 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/latest", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 10), 50);
+    const cacheKey = CACHE_KEYS.latestEpisodes(limit);
 
     try {
+      type LatestItem = {
+        id: number;
+        title: string;
+        episode: string;
+        time: string;
+        thumbnail: string | null;
+        href: string;
+      };
+
+      const cached = await getCache<LatestItem[]>(cacheKey);
+      if (cached) {
+        return ok(reply, {
+          message: "Latest episodes fetched successfully",
+          data: cached,
+          meta: { limit, cache: "hit" },
+        });
+      }
+
       const episodes = await prisma.episode.findMany({
         orderBy: [{ createdAt: "desc" }],
         distinct: ["animeId"],
@@ -84,19 +104,23 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const data: LatestItem[] = episodes.map((item) => ({
+        id: item.id,
+        title: normalizeTitle(item.anime.title),
+        episode: `Ep ${item.number}`,
+        time:
+          formatRelativeTime(item.createdAt) ||
+          formatRelativeTime(item.anime.updatedAt),
+        thumbnail: item.anime.thumbnail,
+        href: `/anime/${item.anime.slug}/${item.slug}`,
+      }));
+
+      await setCache(cacheKey, data, CACHE_TTL.LATEST_EPISODES);
+
       return ok(reply, {
         message: "Latest episodes fetched successfully",
-        data: episodes.map((item) => ({
-          id: item.id,
-          title: normalizeTitle(item.anime.title),
-          episode: `Ep ${item.number}`,
-          time:
-            formatRelativeTime(item.createdAt) ||
-            formatRelativeTime(item.anime.updatedAt),
-          thumbnail: item.anime.thumbnail,
-          href: `/anime/${item.anime.slug}/${item.slug}`,
-        })),
-        meta: { limit },
+        data,
+        meta: { limit, cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);
