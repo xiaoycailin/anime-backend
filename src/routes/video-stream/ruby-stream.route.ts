@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
+import { STREAMING_HOST_URL } from "./url-config";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/ruby-stream";
 
@@ -254,8 +255,8 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(502).send({ error: message });
       }
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      // const port = req.port ? `:${req.port}` : "";
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
 
       // Fetch master M3U8 dari CDN streamruby
       const hlsRes = await fetch(meta.masterM3u8Url, {
@@ -341,8 +342,8 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
           .send(buffer);
       }
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      // const port = req.port ? `:${req.port}` : "";
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
 
       return reply

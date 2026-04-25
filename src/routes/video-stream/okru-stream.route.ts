@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
+import { STREAMING_HOST_URL } from "./url-config";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/okru-stream";
 
@@ -192,8 +193,8 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(502).send({ error: message });
       }
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      // const port = req.port ? `:${req.port}` : "";
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
 
       // ── Case 1: Ada hlsManifestUrl → proxy manifest + rewrite segment URLs
       if (metadata.hlsManifestUrl) {
@@ -299,8 +300,8 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ error: "Invalid token" });
     }
 
-    const port = req.port ? `:${req.port}` : "";
-    const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+    // const port = req.port ? `:${req.port}` : "";
+    const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
 
     // URL untuk proxy MP4 dengan support Range request
     const proxyMp4Url = `${baseUrl}/mp4-segment/${req.params.quality}?t=${t}`;
@@ -380,8 +381,8 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
           .send(buffer);
       }
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      // const port = req.port ? `:${req.port}` : "";
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")

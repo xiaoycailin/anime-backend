@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
+import { STREAMING_HOST_URL } from "./url-config";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/ac-stream";
 const ANICHIN_BASE = "https://anichin.stream";
@@ -118,7 +119,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       const text = await upstream.text();
 
       const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
 
       const rewritten = rewriteM3u8(text, baseUrl, upstreamUrl);
 
@@ -188,8 +189,8 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
           .send(buffer);
       }
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      // const port = req.port ? `:${req.port}` : "";
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
 
       return reply
