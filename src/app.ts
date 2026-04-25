@@ -11,6 +11,7 @@ import path from "path";
 
 export function buildApp() {
   const app = Fastify({
+    trustProxy: true,
     logger: {
       transport: {
         target: "pino-pretty",
