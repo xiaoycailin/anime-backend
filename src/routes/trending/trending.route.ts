@@ -1,0 +1,79 @@
+import type { FastifyPluginAsync } from "fastify";
+import { prisma } from "../../lib/prisma";
+import { ok, sendError } from "../../utils/response";
+import { normalizeTitle } from "../../utils/season-parser";
+
+function toPositiveInt(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+export const trendingRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/weekly", async (request, reply) => {
+    const query = request.query as { limit?: string };
+    const limit = Math.min(toPositiveInt(query.limit, 9), 50);
+
+    const windowEnd = new Date();
+    const windowStart = new Date(windowEnd);
+    windowStart.setDate(windowStart.getDate() - 7);
+
+    try {
+      const animes = await prisma.anime.findMany({
+        where: {
+          updatedAt: {
+            gte: windowStart,
+          },
+        },
+        orderBy: [
+          { followed: "desc" },
+          { rating: "desc" },
+          { updatedAt: "desc" },
+        ],
+        take: limit,
+        select: {
+          id: true,
+          slug: true,
+          title: true,
+          genres: {
+            select: {
+              genre: {
+                select: {
+                  name: true,
+                },
+              },
+            },
+          },
+          thumbnail: true,
+          status: true,
+        },
+      });
+
+      return ok(reply, {
+        message: "Weekly trending anime fetched successfully",
+        data: animes.map((anime) => ({
+          id: anime.id,
+          slug: anime.slug,
+          title: normalizeTitle(anime.title),
+          genre: anime.genres.map((item) => item.genre.name),
+          thumbnail: anime.thumbnail,
+          status: anime.status,
+        })),
+        meta: {
+          limit,
+          windowStart: windowStart.toISOString(),
+          windowEnd: windowEnd.toISOString(),
+          ranking: ["followed desc", "rating desc", "updatedAt desc"],
+          note: "Trending is inferred from recently updated anime and popularity fields.",
+        },
+      });
+    } catch (error) {
+      request.log.error(error);
+      return sendError(reply, {
+        status: 500,
+        message: "Failed to fetch weekly trending anime",
+        errorCode: "TRENDING_WEEKLY_FETCH_FAILED",
+      });
+    }
+  });
+};

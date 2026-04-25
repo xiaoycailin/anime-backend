@@ -1,0 +1,609 @@
+// schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ANIME SERIES ─────────────────────────────────────────────────────────────
+
+model Anime {
+  id                Int      @id @default(autoincrement())
+  slug              String   @unique @db.VarChar(255)
+  title             String
+  thumbnail         String?  @db.Text
+  bigCover          String?  @db.Text
+  rating            Decimal? @db.Decimal(4, 2)
+  alternativeTitles String?  @db.Text
+  synopsis          String?  @db.LongText
+  followed          Int?
+
+  // metadata fields
+  status        String? @db.VarChar(50)
+  network       String? @db.VarChar(100)
+  studio        String? @db.VarChar(100)
+  released      String? @db.VarChar(50)
+  duration      String? @db.VarChar(50)
+  season        String? @db.VarChar(20)
+  country       String? @db.VarChar(50)
+  type          String? @db.VarChar(50)
+  totalEpisodes Int?
+  fansub        String? @db.VarChar(100)
+
+  // engagement stats
+  views                  Int      @default(0)
+  likes                  Int      @default(0)
+  trendingScore          Float    @default(0)
+  trendingScoreUpdatedAt DateTime?
+
+  // relasi
+  genres        AnimeGenre[]
+  episodes      Episode[]
+  tags          AnimeTag[]
+  extraMetadata AnimeMetaExtra[]
+  likedBy       AnimeLike[]
+  reviews       AnimeReview[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@map("animes")
+}
+
+model User {
+  id           Int             @id @default(autoincrement())
+  email        String          @unique
+  username     String          @unique
+  password     String
+  avatar       String?
+  role         String          @default("user") @db.VarChar(20)
+  isVerified   Boolean         @default(false) @map("is_verified")
+  exp          Int             @default(0)
+  level        Int             @default(1)
+  lastExpGainAt DateTime?      @map("last_exp_gain_at")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  watchHistory WatchHistory[]
+  savedAnime   SavedAnime[]
+  preference   UserPreference?
+  comments     Comment[]
+  commentRateLimit CommentRateLimit?
+  commentReactions CommentReaction[]
+  animeLikes   AnimeLike[]
+  episodeReactions EpisodeReaction[]
+  notifications NotificationRecipient[]
+  pushSubscriptions PushSubscription[]
+  notificationPreference NotificationPreference?
+  createdNotifications Notification[] @relation("NotificationCreatedBy")
+  animeReviews   AnimeReview[]
+  commentReports CommentReport[] @relation("CommentReportReporter")
+  resolvedReports CommentReport[] @relation("CommentReportResolver")
+  expLogs       ExpLog[]
+  decorations   UserDecoration[]
+}
+
+// ─── DECORATION (avatar frames, etc) ──────────────────────────────────────────
+
+model Decoration {
+  id            Int      @id @default(autoincrement())
+  name          String   @db.VarChar(100)
+  type          String   @default("frame") @db.VarChar(40)
+  asset         String?  @unique @db.VarChar(255)
+  config        Json?
+  requiredLevel Int      @default(1) @map("required_level")
+  isActive      Boolean  @default(true) @map("is_active")
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  ownedBy UserDecoration[]
+
+  @@index([type, requiredLevel])
+  @@map("decorations")
+}
+
+model UserDecoration {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  decorationId Int      @map("decoration_id")
+  isEquipped   Boolean  @default(false) @map("is_equipped")
+  unlockedAt   DateTime @default(now()) @map("unlocked_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  decoration Decoration @relation(fields: [decorationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, decorationId])
+  @@index([userId, isEquipped])
+  @@map("user_decorations")
+}
+
+model ExpLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  type      String   @db.VarChar(80)
+  value     Int
+  refId     String?  @map("ref_id") @db.VarChar(191)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, refId])
+  @@index([userId, type, createdAt])
+  @@map("exp_logs")
+}
+
+model AnimeLike {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  animeId   Int
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  anime Anime @relation(fields: [animeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, animeId])
+  @@index([animeId])
+  @@map("anime_likes")
+}
+
+model WatchHistory {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  animeId        Int
+  animeSlug      String
+  animeTitle     String
+  animeThumbnail String
+  episodeId      Int
+  episodeSlug    String
+  episodeNumber  Int
+  episodeTitle   String
+  progressSec    Float    @default(0)
+  durationSec    Float    @default(0)
+  progressPct    Float    @default(0)
+  watchedAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, episodeId])
+  @@index([userId, watchedAt(sort: Desc)])
+}
+
+model SavedAnime {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  animeId        Int
+  animeSlug      String
+  animeTitle     String
+  animeThumbnail String
+  animeStatus    String
+  savedAt        DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, animeId])
+}
+
+model UserPreference {
+  id              Int     @id @default(autoincrement())
+  userId          Int     @unique
+  theme           String  @default("dark")
+  defaultQuality  String  @default("auto")
+  autoPlay        Boolean @default(false)
+  defaultVolume   Float   @default(1.0)
+  autoNextEpisode Boolean @default(true)
+  skipIntroEnabled Boolean @default(false)
+  subtitleEnabled  Boolean @default(true)
+  subtitleLang     String  @default("id")
+  subtitleFontSize   String  @default("1.5rem")
+  subtitleFontFamily String  @default("inherit")
+  subtitleColor      String  @default("#ffffff")
+  subtitleBg         String  @default("rgba(0,0,0,0.5)")
+  subtitleShadow     String  @default("0 2px 6px rgba(0,0,0,1)")
+  subtitlePosition   String  @default("10%")
+  subtitleOpacity    Float   @default(1.0)
+  subtitleMaxWidth   String  @default("90%")
+  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum NotificationCategory {
+  announcement
+  content_new
+  content_update
+  personal_activity
+  watch_reminder
+  account_security
+  account_system
+  admin_operational
+}
+
+enum NotificationScope {
+  broadcast
+  user
+  role
+}
+
+enum NotificationRecipientKind {
+  user
+  role
+}
+
+model Notification {
+  id          Int                  @id @default(autoincrement())
+  scope       NotificationScope
+  category    NotificationCategory
+  type        String               @db.VarChar(100)
+  title       String               @db.VarChar(255)
+  message     String               @db.Text
+  link        String?              @db.VarChar(255)
+  image       String?              @db.Text
+  payload     Json?
+  topic       String?              @db.VarChar(100)
+  createdById Int?
+  createdBy   User?                @relation("NotificationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  recipients  NotificationRecipient[]
+  createdAt   DateTime             @default(now())
+
+  @@index([scope, createdAt(sort: Desc)])
+  @@index([category, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model NotificationRecipient {
+  id             Int                       @id @default(autoincrement())
+  notificationId Int
+  userId         Int?
+  kind           NotificationRecipientKind @default(user)
+  role           String?                   @db.VarChar(20)
+  isRead         Boolean                   @default(false)
+  readAt         DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime                  @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, userId])
+  @@index([userId, isRead, createdAt(sort: Desc)])
+  @@index([role, isRead, createdAt(sort: Desc)])
+  @@map("notification_recipients")
+}
+
+model NotificationPreference {
+  id               Int     @id @default(autoincrement())
+  userId           Int     @unique
+  announcement     Boolean @default(true)
+  contentNew       Boolean @default(true)
+  contentUpdate    Boolean @default(true)
+  personalActivity Boolean @default(true)
+  watchReminder    Boolean @default(true)
+  accountSystem    Boolean @default(true)
+  adminOperational Boolean @default(true)
+  pushEnabled      Boolean @default(true)
+  inAppEnabled     Boolean @default(true)
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("notification_preferences")
+}
+
+model PushSubscription {
+  id             Int      @id @default(autoincrement())
+  userId         Int?
+  deviceId       String   @db.VarChar(191)
+  endpoint       String   @db.Text
+  endpointHash   String   @unique @db.VarChar(64)
+  p256dh         String   @db.Text
+  auth           String   @db.Text
+  expirationTime DateTime?
+  userAgent      String?  @db.VarChar(255)
+  allowBroadcast Boolean  @default(true)
+  topics         Json?
+  isActive       Boolean  @default(true)
+  lastUsedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, endpointHash])
+  @@index([userId, isActive])
+  @@index([deviceId, isActive])
+  @@map("push_subscriptions")
+}
+
+model SiteConfig {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @db.VarChar(100)
+  value     String   @db.LongText
+  type      String   @default("string") @db.VarChar(20)
+  group     String   @db.VarChar(50)
+  updatedAt DateTime @updatedAt
+
+  @@index([group])
+  @@map("site_configs")
+}
+
+model Comment {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  animeId   Int
+  episodeId Int?
+
+  content   String?   @db.Text
+  isEdited  Boolean   @default(false)
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  parentId  Int?
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   Comment[] @relation("CommentReplies")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reactions CommentReaction[]
+  reports   CommentReport[]
+
+  @@index([animeId, episodeId, createdAt(sort: Desc)])
+  @@index([userId])
+}
+
+model CommentRateLimit {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @unique
+  lastComment DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CommentReaction {
+  id        Int          @id @default(autoincrement())
+  userId    Int
+  commentId Int
+  type      ReactionType
+
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, commentId])
+  @@index([commentId])
+}
+
+enum ReactionType {
+  LIKE
+  DISLIKE
+}
+
+enum SubtitleFormat {
+  vtt
+  srt
+}
+
+// ─── GENRE (many-to-many via pivot) ───────────────────────────────────────────
+
+model Genre {
+  id     Int          @id @default(autoincrement())
+  name   String       @unique @db.VarChar(100)
+  animes AnimeGenre[]
+
+  @@map("genres")
+}
+
+model AnimeGenre {
+  animeId Int
+  genreId Int
+
+  anime Anime @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  genre Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([animeId, genreId])
+  @@map("anime_genres")
+}
+
+// ─── TAG (many-to-many via pivot) ─────────────────────────────────────────────
+
+model Tag {
+  id     Int        @id @default(autoincrement())
+  slug   String     @unique @db.VarChar(255)
+  label  String     @db.VarChar(255)
+  animes AnimeTag[]
+
+  @@map("tags")
+}
+
+model AnimeTag {
+  animeId Int
+  tagId   Int
+
+  anime Anime @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  tag   Tag   @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([animeId, tagId])
+  @@map("anime_tags")
+}
+
+// ─── EXTRA METADATA (untuk field [key: string] dinamis) ───────────────────────
+
+model AnimeMetaExtra {
+  id      Int    @id @default(autoincrement())
+  animeId Int
+  key     String @db.VarChar(100)
+  value   String @db.Text
+
+  anime Anime @relation(fields: [animeId], references: [id], onDelete: Cascade)
+
+  @@unique([animeId, key])
+  @@map("anime_meta_extras")
+}
+
+// ─── EPISODE ──────────────────────────────────────────────────────────────────
+
+model Episode {
+  id      Int     @id @default(autoincrement())
+  animeId Int
+  slug    String  @unique @db.VarChar(255)
+  number  Int
+  title   String  @db.Text
+  sub     String? @db.VarChar(20)
+  date    String? @db.VarChar(50)
+  status  String  @default("published") @db.VarChar(20)
+  views   Int     @default(0)
+  likes   Int     @default(0)
+  dislikes Int    @default(0)
+  skipIntroSeconds Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  anime   Anime    @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  servers Server[]
+  subtitles Subtitle[]
+  subtitleTracks SubtitleTrack[]
+  reactions EpisodeReaction[]
+
+  // @@unique([animeId, number]) ← HAPUS INI
+
+  @@map("episodes")
+}
+
+model EpisodeReaction {
+  id        Int          @id @default(autoincrement())
+  userId    Int
+  episodeId Int
+  type      ReactionType
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, episodeId])
+  @@index([episodeId])
+  @@map("episode_reactions")
+}
+
+// ─── SERVER (streaming source per episode) ────────────────────────────────────
+
+model Server {
+  id        Int    @id @default(autoincrement())
+  episodeId Int
+  label     String @db.Text
+  value     String @db.Text // iframe src URL
+
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@map("servers")
+}
+
+model Subtitle {
+  id        Int            @id @default(autoincrement())
+  episodeId Int
+  serverUrl String         @db.Text
+  language  String         @db.VarChar(20)
+  label     String         @db.VarChar(100)
+  fileUrl   String         @db.Text
+  format    SubtitleFormat @default(vtt)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  @@unique([episodeId, serverUrl(length: 255), language])
+  @@index([episodeId, serverUrl(length: 255)])
+  @@map("subtitles")
+}
+
+model SubtitleTrack {
+  id        Int      @id @default(autoincrement())
+  episodeId Int
+  serverUrl String   @db.Text
+  language  String   @db.VarChar(20)
+  label     String   @db.VarChar(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  episode Episode        @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  cues    SubtitleCue[]
+
+  @@unique([episodeId, serverUrl(length: 255), language])
+  @@index([episodeId, serverUrl(length: 255)])
+  @@map("subtitle_tracks")
+}
+
+model SubtitleCue {
+  id         Int      @id @default(autoincrement())
+  trackId    Int
+  startTime  Float
+  endTime    Float
+  text       String   @db.LongText
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  track SubtitleTrack @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@index([trackId])
+  @@map("subtitle_cues")
+}
+
+// ─── ANIME REVIEW ─────────────────────────────────────────────────────────────
+
+model AnimeReview {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  animeId   Int
+  /// Rating 1–10
+  rating    Int
+  body      String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  anime Anime @relation(fields: [animeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, animeId])
+  @@index([animeId, rating])
+  @@map("anime_reviews")
+}
+
+// ─── COMMENT REPORT ───────────────────────────────────────────────────────────
+
+enum ReportReason {
+  spam
+  harassment
+  hate_speech
+  misinformation
+  inappropriate
+  other
+}
+
+enum ReportStatus {
+  pending
+  resolved
+  dismissed
+}
+
+model CommentReport {
+  id           Int          @id @default(autoincrement())
+  reporterId   Int
+  commentId    Int
+  reason       ReportReason
+  description  String?      @db.Text
+  status       ReportStatus @default(pending)
+  resolvedAt   DateTime?
+  resolvedById Int?
+  createdAt    DateTime     @default(now())
+
+  reporter   User    @relation("CommentReportReporter",  fields: [reporterId],   references: [id], onDelete: Cascade)
+  comment    Comment @relation(fields: [commentId],      references: [id],       onDelete: Cascade)
+  resolvedBy User?   @relation("CommentReportResolver",  fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@unique([reporterId, commentId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("comment_reports")
+}
