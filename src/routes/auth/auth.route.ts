@@ -6,7 +6,11 @@ import {
   signAccessToken,
   signRefreshToken,
 } from "../../plugins/auth";
-import { calculateLevel, getCultivationBadge, getLevelProgress } from "../../services/exp.service";
+import {
+  calculateLevel,
+  getCultivationBadge,
+  getLevelProgress,
+} from "../../services/exp.service";
 import {
   getEquippedDecorations,
   syncUnlocks,
@@ -44,7 +48,10 @@ function publicUser(
     lastExpGainAt?: Date | null;
     createdAt?: Date;
   },
-  extras: { frame?: EquippedDecorationDTO; nametag?: EquippedDecorationDTO } = {},
+  extras: {
+    frame?: EquippedDecorationDTO;
+    nametag?: EquippedDecorationDTO;
+  } = {},
 ) {
   const exp = user.exp ?? 0;
   const level = user.level ?? calculateLevel(exp);
@@ -157,33 +164,45 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.post("/refresh", async (request, reply) => {
-    const token = request.cookies.refreshToken;
-    if (!token) throw unauthorized("Refresh token tidak ditemukan");
+  app.post(
+    "/refresh",
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      // get token by autorization header
+      let token = null;
+      if (request) {
+        const authHeader = request.headers["authorization"] || "";
+        if (authHeader.startsWith("Bearer ")) {
+          token = authHeader.slice(7);
+        }
+      }
 
-    try {
-      const payload = app.jwt.verify<{
-        id: number;
-        email: string;
-        username: string;
-        role?: string;
-      }>(token);
+      if (!token) throw unauthorized("Refresh token tidak ditemukan");
 
-      const user = await prisma.user.findUnique({
-        where: { id: payload.id },
-        select: { id: true, email: true, username: true, role: true },
-      });
+      try {
+        const payload = app.jwt.verify<{
+          id: number;
+          email: string;
+          username: string;
+          role?: string;
+        }>(token);
 
-      if (!user) throw unauthorized("Refresh token tidak valid");
+        const user = await prisma.user.findUnique({
+          where: { id: payload.id },
+          select: { id: true, email: true, username: true, role: true },
+        });
 
-      return ok(reply, {
-        message: "Token refreshed",
-        data: { accessToken: signAccessToken(app, user) },
-      });
-    } catch {
-      throw unauthorized("Refresh token tidak valid atau kedaluwarsa");
-    }
-  });
+        if (!user) throw unauthorized("Refresh token tidak valid");
+
+        return ok(reply, {
+          message: "Token refreshed",
+          data: { accessToken: signAccessToken(app, user) },
+        });
+      } catch {
+        throw unauthorized("Refresh token tidak valid atau kedaluwarsa");
+      }
+    },
+  );
 
   app.post("/logout", async (_request, reply) => {
     reply.clearCookie("refreshToken", { path: "/" });
@@ -266,7 +285,10 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         where: { id: request.user.id },
       });
 
-      if (!user || !(await compare(body.currentPassword ?? "", user.password))) {
+      if (
+        !user ||
+        !(await compare(body.currentPassword ?? "", user.password))
+      ) {
         throw badRequest("Current password salah");
       }
 
