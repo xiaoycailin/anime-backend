@@ -10,9 +10,12 @@ import {
   resolutionsToProcess,
 } from "./hls-encoder.service";
 import {
+  appendEncodingLog,
   cleanupUploadTempDir,
   expireSessionImmediately,
   failSession,
+  getReceivedChunks,
+  type UploadSessionRecord,
   updateSessionStatus,
   uploadTempDir,
 } from "./upload-session.service";
@@ -47,6 +50,36 @@ export type VideoEncodeJobData = {
   totalChunks: number;
 };
 
+function sameJobData(
+  left: Partial<VideoEncodeJobData> | undefined,
+  right: VideoEncodeJobData,
+) {
+  return (
+    left?.uploadId === right.uploadId &&
+    left?.videoId === right.videoId &&
+    Number(left?.episodeId) === right.episodeId &&
+    Number(left?.initialResolution) === right.initialResolution &&
+    Number(left?.totalChunks) === right.totalChunks
+  );
+}
+
+function jobDataFromSession(
+  session: UploadSessionRecord,
+): VideoEncodeJobData | null {
+  if (!session.videoId || !session.totalChunks || session.totalChunks <= 0) {
+    return null;
+  }
+
+  return {
+    uploadId: session.id,
+    videoId: session.videoId,
+    episodeId: session.episodeId,
+    inputPath: "",
+    initialResolution: session.initialResolution,
+    totalChunks: session.totalChunks,
+  };
+}
+
 export function getEncodingQueue(): Queue<VideoEncodeJobData> {
   if (!queue) {
     queue = new Queue<VideoEncodeJobData>(QUEUE_NAME, {
@@ -62,7 +95,119 @@ export function getEncodingQueue(): Queue<VideoEncodeJobData> {
 }
 
 export async function enqueueEncoding(data: VideoEncodeJobData) {
-  return getEncodingQueue().add("encode", data, { jobId: data.uploadId });
+  const encodingQueue = getEncodingQueue();
+  const existing = await encodingQueue.getJob(data.uploadId);
+
+  if (existing) {
+    const state = await existing.getState().catch(() => "unknown");
+    const sameData = sameJobData(existing.data, data);
+
+    if (state === "active") {
+      if (!sameData) {
+        throw new Error(
+          "Encoding job lama masih aktif untuk upload session ini",
+        );
+      }
+      await appendEncodingLog(
+        data.uploadId,
+        "Encoding job sudah aktif di worker",
+      );
+      return existing;
+    }
+
+    if (sameData && ["waiting", "delayed", "paused"].includes(state)) {
+      await appendEncodingLog(
+        data.uploadId,
+        `Encoding job sudah ada di queue (${state})`,
+      );
+      return existing;
+    }
+
+    await appendEncodingLog(
+      data.uploadId,
+      `Menghapus encoding job lama (${state}) sebelum requeue`,
+      "warn",
+    );
+    await existing.remove();
+  }
+
+  await appendEncodingLog(data.uploadId, "Encoding job masuk queue");
+  return encodingQueue.add("encode", data, { jobId: data.uploadId });
+}
+
+export async function reconcileEncodingJobForSession(
+  session: UploadSessionRecord,
+): Promise<{
+  state: string | null;
+  requeued: boolean;
+  failedReason?: string;
+}> {
+  if (session.status !== "processing") {
+    return { state: null, requeued: false };
+  }
+
+  const currentData = jobDataFromSession(session);
+  if (!currentData) {
+    const reason = "Session processing tidak punya data encoding lengkap";
+    await appendEncodingLog(session.id, reason, "error");
+    await failSession(session.id, reason);
+    return { state: "failed", requeued: false, failedReason: reason };
+  }
+
+  const encodingQueue = getEncodingQueue();
+  const job = await encodingQueue.getJob(session.id);
+
+  if (!job) {
+    const receivedChunks = await getReceivedChunks(session.id).catch(() => []);
+    const receivedCount = Math.max(session.receivedChunks, receivedChunks.length);
+    if (receivedCount >= currentData.totalChunks) {
+      await appendEncodingLog(
+        session.id,
+        "Encoding job tidak ditemukan, membuat queue job baru",
+        "warn",
+      );
+      await enqueueEncoding(currentData);
+      return { state: "waiting", requeued: true };
+    }
+
+    return { state: null, requeued: false };
+  }
+
+  const state = await job.getState().catch(() => "unknown");
+  const sameData = sameJobData(job.data, currentData);
+
+  if (state === "failed") {
+    if (!sameData) {
+      await appendEncodingLog(
+        session.id,
+        "Encoding job gagal yang lama terdeteksi, requeue dengan data session terbaru",
+        "warn",
+      );
+      await job.remove();
+      await enqueueEncoding(currentData);
+      return { state: "waiting", requeued: true };
+    }
+
+    const reason = job.failedReason || "Encoding job gagal";
+    if (session.errorMessage !== reason) {
+      await appendEncodingLog(session.id, reason, "error");
+      await failSession(session.id, reason);
+    }
+    return { state: "failed", requeued: false, failedReason: reason };
+  }
+
+  if (!sameData && ["waiting", "delayed", "paused", "completed"].includes(state)) {
+    await appendEncodingLog(
+      session.id,
+      `Encoding job ${state} memakai data lama, requeue dengan data terbaru`,
+      "warn",
+    );
+    await job.remove();
+    await enqueueEncoding(currentData);
+    return { state: "waiting", requeued: true };
+  }
+
+  return { state, requeued: false };
 }
 
 async function uploadFolderToR2(input: {
@@ -189,7 +334,12 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
     initialResolution,
     totalChunks,
   } = job.data;
+  const log = (
+    message: string,
+    level: "info" | "warn" | "error" = "info",
+  ) => appendEncodingLog(uploadId, message, level);
 
+  await log("Worker mulai memproses encoding");
   await updateSessionStatus(uploadId, {
     status: "processing",
     encodingProgress: 0,
@@ -200,6 +350,7 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
   const assembledPath = inputPath || path.join(tempDir, "source.bin");
 
   if (!inputPath) {
+    await log(`Menggabungkan ${totalChunks} chunk menjadi source video`);
     await assembleChunksToFile({
       uploadId,
       totalChunks,
@@ -207,6 +358,7 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
     });
   }
 
+  await log("Membaca metadata video dengan ffprobe");
   const probe = await probeVideo(assembledPath).catch((error) => {
     throw new Error(`Source tidak valid: ${error.message ?? error}`);
   });
@@ -219,6 +371,11 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
   if (targetResolutions.length === 0) {
     throw new Error("Tidak ada resolusi target yang valid");
   }
+
+  await log(
+    `Source terdeteksi ${probe.width}x${probe.height}, video=${probe.videoCodec ?? "unknown"}, audio=${probe.audioCodec ?? "unknown"}, durasi=${probe.durationSec.toFixed(2)}s`,
+  );
+  await log(`Target resolusi: ${targetResolutions.map((res) => `${res}p`).join(", ")}`);
 
   const completed: number[] = [];
   const totalSteps = targetResolutions.length;
@@ -236,10 +393,14 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
       probe.height === ladder.height &&
       probe.videoCodec === "h264" &&
       probe.audioCodec === "aac";
+    await log(
+      `Mulai encode ${resolution}p (${matchesSource ? "stream copy" : "transcode"})`,
+    );
 
     const outputDir = path.join(tempDir, "hls", `${resolution}p`);
     await fs.mkdir(outputDir, { recursive: true });
 
+    let lastLoggedEncodeProgress = -1;
     await encodeToHls({
       inputPath: assembledPath,
       outputDir,
@@ -249,14 +410,22 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
       onProgress: async (ratio) => {
         const overall =
           ((currentStep - 1) / totalSteps) * 100 + (ratio / totalSteps) * 100;
+        const percent = Math.floor(ratio * 100);
+        if (percent >= lastLoggedEncodeProgress + 25 || percent === 100) {
+          lastLoggedEncodeProgress = percent;
+          await log(`Encode ${resolution}p ${Math.min(100, percent)}%`);
+        }
         await updateSessionStatus(uploadId, {
           encodingProgress: Math.min(99, Number(overall.toFixed(2))),
           currentResolution: resolution,
         }).catch(() => undefined);
       },
     });
+    await log(`Encode ${resolution}p selesai`);
 
     const keyPrefix = `videos/${videoId}/${resolution}p`;
+    await log(`Upload hasil ${resolution}p ke R2`);
+    let lastLoggedUploadProgress = -1;
     await uploadFolderToR2({
       localDir: outputDir,
       keyPrefix,
@@ -264,6 +433,11 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
         const perResolution = (uploaded / total) * (100 / totalSteps);
         const overall =
           (completed.length / totalSteps) * 100 + perResolution;
+        const percent = Math.floor((uploaded / total) * 100);
+        if (percent >= lastLoggedUploadProgress + 25 || percent === 100) {
+          lastLoggedUploadProgress = percent;
+          await log(`R2 upload ${resolution}p ${Math.min(100, percent)}%`);
+        }
         await updateSessionStatus(uploadId, {
           r2UploadProgress: Math.min(99, Number(overall.toFixed(2))),
         }).catch(() => undefined);
@@ -275,8 +449,10 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
       resolutionsDone: completed,
       encodingProgress: (currentStep / totalSteps) * 100,
     });
+    await log(`Resolusi ${resolution}p selesai diproses`);
   }
 
+  await log("Membuat master playlist");
   const masterPlaylist = buildMasterPlaylist({ resolutions: completed });
   const masterKey = `videos/${videoId}/master.m3u8`;
   await uploadStreamingObject({
@@ -287,6 +463,7 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
   });
 
   const masterUrl = getStreamingPublicUrl(masterKey);
+  await log("Menyimpan server R2 ke episode");
   await setEpisodeR2Server({ episodeId, masterUrl });
 
   await updateSessionStatus(uploadId, {
@@ -299,6 +476,7 @@ export async function processVideoJob(job: Job<VideoEncodeJobData>) {
     currentResolution: null,
   });
 
+  await log("Encoding selesai, master playlist siap");
   await expireSessionImmediately(uploadId);
   await cleanupUploadTempDir(uploadId);
 
@@ -318,6 +496,11 @@ export function startEncodingWorker(): Worker<VideoEncodeJobData> {
     console.error(
       `[video-pipeline] job ${job.id} failed: ${error?.message ?? error}`,
     );
+    await appendEncodingLog(
+      job.data.uploadId,
+      error?.message ?? "Encoding gagal",
+      "error",
+    ).catch(() => undefined);
     await failSession(
       job.data.uploadId,
       error?.message ?? "Encoding gagal",

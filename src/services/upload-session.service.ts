@@ -59,6 +59,15 @@ export function isValidResolution(value: unknown): value is ValidResolution {
 
 const REDIS_KEY_PREFIX = "upload:session:";
 const REDIS_CHUNK_KEY_PREFIX = "upload:chunks:";
+const REDIS_ENCODING_LOG_KEY_PREFIX = "upload:encoding-logs:";
+
+export type UploadEncodingLogLevel = "info" | "warn" | "error";
+
+export type UploadEncodingLog = {
+  at: string;
+  level: UploadEncodingLogLevel;
+  message: string;
+};
 
 function redisSessionKey(uploadId: string) {
   return `${REDIS_KEY_PREFIX}${uploadId}`;
@@ -66,6 +75,10 @@ function redisSessionKey(uploadId: string) {
 
 function redisChunkKey(uploadId: string) {
   return `${REDIS_CHUNK_KEY_PREFIX}${uploadId}`;
+}
+
+function redisEncodingLogKey(uploadId: string) {
+  return `${REDIS_ENCODING_LOG_KEY_PREFIX}${uploadId}`;
 }
 
 export function uploadTempDir(uploadId: string) {
@@ -224,6 +237,62 @@ export async function getReceivedChunks(uploadId: string): Promise<number[]> {
 
 export async function clearChunkSet(uploadId: string) {
   await redis.del(redisChunkKey(uploadId));
+}
+
+export async function appendEncodingLog(
+  uploadId: string,
+  message: string,
+  level: UploadEncodingLogLevel = "info",
+) {
+  try {
+    const key = redisEncodingLogKey(uploadId);
+    const entry: UploadEncodingLog = {
+      at: new Date().toISOString(),
+      level,
+      message: message.slice(0, 1000),
+    };
+    await redis.rpush(key, JSON.stringify(entry));
+    await redis.ltrim(key, -200, -1);
+    await redis.pexpire(key, UPLOAD_SESSION_TTL_MS);
+  } catch {
+    // Logging must not break the upload or encoding pipeline.
+  }
+}
+
+export async function getEncodingLogs(
+  uploadId: string,
+): Promise<UploadEncodingLog[]> {
+  try {
+    const entries = await redis.lrange(redisEncodingLogKey(uploadId), 0, -1);
+    return entries
+      .map((entry) => {
+        try {
+          const parsed = JSON.parse(entry) as UploadEncodingLog;
+          if (!parsed?.at || !parsed?.message) return null;
+          return {
+            at: parsed.at,
+            level:
+              parsed.level === "warn" || parsed.level === "error"
+                ? parsed.level
+                : "info",
+            message: String(parsed.message),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry): entry is UploadEncodingLog => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+export async function clearEncodingLogs(uploadId: string) {
+  try {
+    await redis.del(redisEncodingLogKey(uploadId));
+  } catch {
+    // ignore
+  }
 }
 
 export async function updateSessionStatus(

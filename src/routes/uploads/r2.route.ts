@@ -15,7 +15,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const uploadsRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", app.adminAuthenticate);
 
-  app.post("/r2", async (request, reply) => {
+  app.post("/", async (request, reply) => {
     if (!request.isMultipart()) {
       throw badRequest("Content-Type harus multipart/form-data");
     }

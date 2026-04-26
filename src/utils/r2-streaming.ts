@@ -1,6 +1,8 @@
 import {
+  DeleteObjectsCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -13,6 +15,24 @@ type R2StreamingConfig = {
   secretAccessKey: string;
   bucket: string;
   publicUrl: string;
+};
+
+export type StreamingVideoSummary = {
+  videoId: string;
+  prefix: string;
+  masterKey: string;
+  masterUrl: string;
+  objectCount: number;
+  totalSize: number;
+  lastModified: string | null;
+  resolutions: number[];
+  hasMaster: boolean;
+};
+
+export type StreamingVideoListResult = {
+  items: StreamingVideoSummary[];
+  nextCursor: string | null;
+  bucket: string;
 };
 
 let client: S3Client | null = null;
@@ -124,6 +144,149 @@ export async function deleteStreamingObject(key: string) {
       Key: key.replace(/^\/+/, ""),
     }),
   );
+}
+
+async function listKeysByPrefix(prefix: string) {
+  const config = getStreamingConfig();
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await getStreamingClient().send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: prefix.replace(/^\/+/, ""),
+        ContinuationToken: continuationToken,
+      }),
+    );
+
+    for (const item of response.Contents ?? []) {
+      if (item.Key) keys.push(item.Key);
+    }
+
+    continuationToken = response.IsTruncated
+      ? response.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  return keys;
+}
+
+async function summarizeStreamingVideoPrefix(
+  prefix: string,
+): Promise<StreamingVideoSummary | null> {
+  const config = getStreamingConfig();
+  const cleanPrefix = prefix.replace(/^\/+/, "");
+  const match = cleanPrefix.match(/^videos\/([^/]+)\//);
+  if (!match) return null;
+
+  const videoId = match[1];
+  const resolutions = new Set<number>();
+  let objectCount = 0;
+  let totalSize = 0;
+  let lastModified: Date | null = null;
+  let hasMaster = false;
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await getStreamingClient().send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: cleanPrefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+
+    for (const item of response.Contents ?? []) {
+      const key = item.Key ?? "";
+      objectCount += 1;
+      totalSize += Number(item.Size ?? 0);
+      if (item.LastModified && (!lastModified || item.LastModified > lastModified)) {
+        lastModified = item.LastModified;
+      }
+      if (key === `${cleanPrefix}master.m3u8`) hasMaster = true;
+
+      const resolution = key.match(/\/(\d{3,4})p\//);
+      if (resolution) resolutions.add(Number(resolution[1]));
+    }
+
+    continuationToken = response.IsTruncated
+      ? response.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  const masterKey = `${cleanPrefix}master.m3u8`;
+  return {
+    videoId,
+    prefix: cleanPrefix,
+    masterKey,
+    masterUrl: publicUrlForKey(config.publicUrl, masterKey),
+    objectCount,
+    totalSize,
+    lastModified: lastModified?.toISOString() ?? null,
+    resolutions: Array.from(resolutions).sort((a, b) => a - b),
+    hasMaster,
+  };
+}
+
+export async function listStreamingVideos(input: {
+  cursor?: string | null;
+  limit?: number;
+} = {}): Promise<StreamingVideoListResult> {
+  const config = getStreamingConfig();
+  const limit = Math.min(50, Math.max(1, Math.floor(input.limit ?? 20)));
+
+  const response = await getStreamingClient().send(
+    new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: "videos/",
+      Delimiter: "/",
+      MaxKeys: limit,
+      ContinuationToken: input.cursor || undefined,
+    }),
+  );
+
+  const summaries = await Promise.all(
+    (response.CommonPrefixes ?? [])
+      .map((item) => item.Prefix)
+      .filter((prefix): prefix is string => Boolean(prefix))
+      .map((prefix) => summarizeStreamingVideoPrefix(prefix)),
+  );
+
+  return {
+    items: summaries.filter(
+      (item): item is StreamingVideoSummary => Boolean(item),
+    ),
+    nextCursor: response.NextContinuationToken ?? null,
+    bucket: config.bucket,
+  };
+}
+
+export async function deleteStreamingVideo(videoId: string) {
+  const config = getStreamingConfig();
+  const cleanVideoId = videoId.trim();
+  const prefix = `videos/${cleanVideoId}/`;
+  const keys = await listKeysByPrefix(prefix);
+
+  for (let i = 0; i < keys.length; i += 1000) {
+    const chunk = keys.slice(i, i + 1000);
+    await getStreamingClient().send(
+      new DeleteObjectsCommand({
+        Bucket: config.bucket,
+        Delete: {
+          Objects: chunk.map((key) => ({ Key: key })),
+          Quiet: true,
+        },
+      }),
+    );
+  }
+
+  return {
+    videoId: cleanVideoId,
+    prefix,
+    deletedCount: keys.length,
+    bucket: config.bucket,
+  };
 }
 
 export function getStreamingBucket(): string {

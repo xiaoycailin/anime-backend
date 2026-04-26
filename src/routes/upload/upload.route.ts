@@ -5,11 +5,15 @@ import { prisma } from "../../lib/prisma";
 import { created, ok } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import {
+  appendEncodingLog,
   clearChunkSet,
+  clearEncodingLogs,
   createUploadSession,
   ensureSessionUsable,
   ensureUploadTempDir,
+  failSession,
   findActiveSessionForEpisode,
+  getEncodingLogs,
   getReceivedChunks,
   getUploadSession,
   isValidResolution,
@@ -23,6 +27,7 @@ import {
 import {
   enqueueEncoding,
   generateVideoId,
+  reconcileEncodingJobForSession,
 } from "../../services/video-pipeline.service";
 
 const MAX_CHUNK_SIZE = 20 * 1024 * 1024;
@@ -91,8 +96,13 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     const session = await getUploadSession(uploadId);
     if (!session) throw notFound("Upload session tidak ditemukan");
 
-    const checked = await markSessionExpiredIfNeeded(session);
+    let checked = await markSessionExpiredIfNeeded(session);
+    if (checked.status === "processing") {
+      await reconcileEncodingJobForSession(checked);
+      checked = (await getUploadSession(uploadId)) ?? checked;
+    }
     const receivedChunks = await getReceivedChunks(uploadId);
+    const encodingLogs = await getEncodingLogs(uploadId);
 
     return ok(reply, {
       message: "Upload status fetched",
@@ -116,6 +126,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
         fileSize: checked.fileSize,
         fileLastModified: checked.fileLastModified,
         initialResolution: checked.initialResolution,
+        encodingLogs,
       },
     });
   });
@@ -127,12 +138,17 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       throw badRequest("episodeId tidak valid");
     }
 
-    const session = await findActiveSessionForEpisode(episodeId);
+    let session = await findActiveSessionForEpisode(episodeId);
     if (!session) {
       return ok(reply, { message: "Tidak ada session aktif", data: null });
     }
 
+    if (session.status === "processing") {
+      await reconcileEncodingJobForSession(session);
+      session = (await getUploadSession(session.id)) ?? session;
+    }
     const receivedChunks = await getReceivedChunks(session.id);
+    const encodingLogs = await getEncodingLogs(session.id);
 
     return ok(reply, {
       message: "Active session ditemukan",
@@ -156,6 +172,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
         fileSize: session.fileSize,
         fileLastModified: session.fileLastModified,
         initialResolution: session.initialResolution,
+        encodingLogs,
       },
     });
   });
@@ -215,8 +232,12 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const fileChanged =
-      (session.fileName !== null && fileName !== null && session.fileName !== fileName) ||
-      (session.fileSize !== null && fileSize !== null && session.fileSize !== fileSize) ||
+      (session.fileName !== null &&
+        fileName !== null &&
+        session.fileName !== fileName) ||
+      (session.fileSize !== null &&
+        fileSize !== null &&
+        session.fileSize !== fileSize) ||
       (session.fileLastModified !== null &&
         fileLastModified !== null &&
         session.fileLastModified !== fileLastModified);
@@ -224,6 +245,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     if (fileChanged) {
       await cleanupUploadTempDir(uploadId);
       await clearChunkSet(uploadId);
+      await clearEncodingLogs(uploadId);
       await ensureUploadTempDir(uploadId);
       await updateSessionStatus(uploadId, {
         fileName: fileName ?? null,
@@ -355,20 +377,38 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
 
     const videoId = session.videoId ?? generateVideoId();
 
+    await clearEncodingLogs(uploadId);
+    await appendEncodingLog(uploadId, "Upload lengkap, menyiapkan encoding");
     await updateSessionStatus(uploadId, {
       status: "processing",
       videoId,
       uploadProgress: 100,
+      encodingProgress: 0,
+      r2UploadProgress: 0,
+      currentResolution: null,
+      resolutionsDone: [],
+      masterPlaylistUrl: null,
+      errorMessage: null,
     });
 
-    await enqueueEncoding({
-      uploadId,
-      videoId,
-      episodeId: session.episodeId,
-      inputPath: "",
-      initialResolution: session.initialResolution,
-      totalChunks,
-    });
+    try {
+      await enqueueEncoding({
+        uploadId,
+        videoId,
+        episodeId: session.episodeId,
+        inputPath: "",
+        initialResolution: session.initialResolution,
+        totalChunks,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Gagal memasukkan job encoding";
+      await appendEncodingLog(uploadId, message, "error");
+      await failSession(uploadId, message);
+      throw badRequest(`Gagal memulai encoding: ${message}`);
+    }
 
     return ok(reply, {
       message: "Upload selesai, encoding mulai",
