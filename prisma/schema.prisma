@@ -628,3 +628,42 @@ model CommentReport {
   @@index([status, createdAt(sort: Desc)])
   @@map("comment_reports")
 }
+
+// ─── VIDEO UPLOAD SESSIONS ────────────────────────────────────────────────────
+
+enum UploadSessionStatus {
+  idle
+  uploading
+  processing
+  completed
+  failed
+  expired
+}
+
+model UploadSession {
+  id                String              @id @db.VarChar(36)
+  episodeId         Int                 @map("episode_id")
+  sesid             String?             @db.VarChar(255)
+  status            UploadSessionStatus @default(idle)
+  initialResolution Int                 @default(720) @map("initial_resolution")
+  totalChunks       Int?                @map("total_chunks")
+  receivedChunks    Int                 @default(0) @map("received_chunks")
+  uploadProgress    Float               @default(0) @map("upload_progress")
+  encodingProgress  Float               @default(0) @map("encoding_progress")
+  r2UploadProgress  Float               @default(0) @map("r2_upload_progress")
+  currentResolution Int?                @map("current_resolution")
+  resolutionsDone   Json?               @map("resolutions_done")
+  fileName          String?             @map("file_name") @db.VarChar(255)
+  fileSize          BigInt?             @map("file_size")
+  fileLastModified  BigInt?             @map("file_last_modified")
+  videoId           String?             @map("video_id") @db.VarChar(40)
+  masterPlaylistUrl String?             @map("master_playlist_url") @db.Text
+  errorMessage      String?             @map("error_message") @db.Text
+  expiresAt         DateTime            @map("expires_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  @@index([episodeId])
+  @@index([status, expiresAt])
+  @@map("upload_sessions")
+}

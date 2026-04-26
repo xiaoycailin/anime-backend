@@ -5,6 +5,8 @@ dotenv.config();
 import { buildApp } from "./app";
 import { startTrendingRefreshJob } from "./services/trending.service";
 import { startReminderJob } from "./jobs/reminder.job";
+import { startEncodingWorker } from "./services/video-pipeline.service";
+import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
 import { closeRedis, redis } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
@@ -36,6 +38,11 @@ async function start() {
     await app.listen({ port, host: "0.0.0.0" });
     startTrendingRefreshJob();
     startReminderJob();
+    startEncodingWorker();
+    startUploadCleanupJob({
+      info: (msg) => app.log.info(msg),
+      error: (msg, err) => app.log.error({ err }, msg),
+    });
     app.log.info(
       { redisStatus: redis.status },
       `Server running on http://localhost:${port}`,

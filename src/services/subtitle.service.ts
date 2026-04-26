@@ -1,7 +1,10 @@
 import crypto from "crypto";
+import { lookup } from "dns/promises";
 import fs from "fs/promises";
+import net from "net";
 import path from "path";
 import { Prisma } from "@prisma/client";
+import { CacheInvalidator } from "../lib/cache";
 import { prisma } from "../lib/prisma";
 import { badRequest, conflict, notFound } from "../utils/http-error";
 
@@ -32,8 +35,15 @@ type TrackInput = {
   label?: string;
 };
 
+type ImportSubtitleInput = TrackInput & {
+  content?: string;
+  sourceUrl?: string;
+};
+
 const subtitleDir = path.join(process.cwd(), "uploads", "subtitles");
 const allowedFormats = new Set(["srt", "vtt"]);
+const MAX_REMOTE_SUBTITLE_BYTES = 5 * 1024 * 1024;
+const REMOTE_SUBTITLE_TIMEOUT_MS = 15_000;
 
 function normalizeLanguage(language?: string) {
   const value = language?.trim().toLowerCase();
@@ -64,6 +74,126 @@ export function srtToVtt(input: string) {
 
 function assertSubtitleContent(content: string) {
   if (!content.includes("-->")) throw badRequest("File subtitle tidak valid");
+}
+
+function isPrivateIpAddress(value: string) {
+  const version = net.isIP(value);
+  if (version === 4) {
+    const parts = value.split(".").map((part) => Number(part));
+    const [a, b] = parts;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  if (version === 6) {
+    const normalized = value.toLowerCase();
+    return (
+      normalized === "::" ||
+      normalized === "::1" ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      normalized.startsWith("fe80:")
+    );
+  }
+
+  return false;
+}
+
+async function assertRemoteSubtitleUrlAllowed(url: URL) {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw badRequest("URL subtitle harus http atau https");
+  }
+
+  const hostname = url.hostname.replace(/\.$/, "").toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) {
+    throw badRequest("URL subtitle tidak boleh mengarah ke host lokal");
+  }
+
+  if (isPrivateIpAddress(hostname)) {
+    throw badRequest("URL subtitle tidak boleh mengarah ke IP privat");
+  }
+
+  const addresses = await lookup(hostname, { all: true }).catch(() => {
+    throw badRequest("URL subtitle tidak bisa diresolve");
+  });
+
+  if (addresses.some((address) => isPrivateIpAddress(address.address))) {
+    throw badRequest("URL subtitle tidak boleh mengarah ke jaringan privat");
+  }
+}
+
+async function fetchRemoteSubtitle(sourceUrl: string): Promise<UploadedSubtitle> {
+  const rawUrl = cleanString(sourceUrl);
+  if (!rawUrl) throw badRequest("URL subtitle wajib diisi");
+
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw badRequest("URL subtitle tidak valid");
+  }
+
+  await assertRemoteSubtitleUrlAllowed(url);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REMOTE_SUBTITLE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url.toString(), {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        accept: "text/vtt,application/x-subrip,text/plain,*/*",
+        "user-agent": "AniStream subtitle importer",
+      },
+    });
+
+    if (!response.ok) {
+      throw badRequest(`Gagal fetch subtitle (${response.status})`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") ?? 0);
+    if (contentLength > MAX_REMOTE_SUBTITLE_BYTES) {
+      throw badRequest("Ukuran subtitle melebihi 5MB");
+    }
+
+    if (!response.body) {
+      throw badRequest("Response subtitle kosong");
+    }
+
+    const chunks: Buffer[] = [];
+    let totalSize = 0;
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      const buffer = Buffer.from(chunk);
+      totalSize += buffer.length;
+      if (totalSize > MAX_REMOTE_SUBTITLE_BYTES) {
+        throw badRequest("Ukuran subtitle melebihi 5MB");
+      }
+      chunks.push(buffer);
+    }
+
+    const filename = path.basename(url.pathname) || "remote-subtitle.vtt";
+    return {
+      filename,
+      buffer: Buffer.concat(chunks),
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw badRequest("Fetch subtitle timeout");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function toSubtitleFileName(originalName: string) {
@@ -125,6 +255,21 @@ function duplicateError(error: unknown): never {
   throw error;
 }
 
+async function invalidateEpisodeSubtitleCache(episodeId: number) {
+  if (!Number.isInteger(episodeId) || episodeId <= 0) return;
+
+  const episode = await prisma.episode.findUnique({
+    where: { id: episodeId },
+    select: {
+      slug: true,
+      anime: { select: { slug: true } },
+    },
+  });
+
+  if (!episode) return;
+  await CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug);
+}
+
 export async function listSubtitles(episodeId: number) {
   if (!Number.isInteger(episodeId) || episodeId <= 0)
     throw badRequest("episodeId tidak valid");
@@ -157,7 +302,7 @@ export async function createSubtitle(
 
   if (!stored.fileUrl) throw badRequest("File atau URL subtitle wajib diisi");
 
-  return prisma.subtitle
+  const subtitle = await prisma.subtitle
     .create({
       data: {
         episodeId,
@@ -169,6 +314,9 @@ export async function createSubtitle(
       },
     })
     .catch(duplicateError);
+
+  await invalidateEpisodeSubtitleCache(subtitle.episodeId);
+  return subtitle;
 }
 
 export async function updateSubtitle(
@@ -190,13 +338,22 @@ export async function updateSubtitle(
   if (Object.keys(data).length === 0)
     throw badRequest("Tidak ada data yang diubah");
 
-  return prisma.subtitle.update({ where: { id }, data }).catch(duplicateError);
+  const subtitle = await prisma.subtitle
+    .update({ where: { id }, data })
+    .catch(duplicateError);
+
+  await invalidateEpisodeSubtitleCache(subtitle.episodeId);
+  return subtitle;
 }
 
 export async function deleteSubtitle(id: number) {
   if (!Number.isInteger(id) || id <= 0)
     throw badRequest("id subtitle tidak valid");
-  await prisma.subtitle.delete({ where: { id } });
+  const subtitle = await prisma.subtitle.delete({
+    where: { id },
+    select: { episodeId: true },
+  });
+  await invalidateEpisodeSubtitleCache(subtitle.episodeId);
   return { message: "deleted" };
 }
 
@@ -232,7 +389,7 @@ export async function importSubtitle(input: {
 
   if (!source) throw notFound("Subtitle sumber tidak ditemukan");
 
-  return prisma.subtitle
+  const subtitle = await prisma.subtitle
     .create({
       data: {
         episodeId,
@@ -244,6 +401,9 @@ export async function importSubtitle(input: {
       },
     })
     .catch(duplicateError);
+
+  await invalidateEpisodeSubtitleCache(subtitle.episodeId);
+  return subtitle;
 }
 
 function cueOrder(
@@ -369,11 +529,14 @@ export async function createSubtitleTrack(input: TrackInput) {
   if (!serverUrl) throw badRequest("serverUrl wajib diisi");
   await assertEpisodeServer(episodeId, serverUrl);
 
-  return prisma.subtitleTrack.upsert({
+  const track = await prisma.subtitleTrack.upsert({
     where: { episodeId_serverUrl_language: { episodeId, serverUrl, language } },
     update: { label },
     create: { episodeId, serverUrl, language, label },
   });
+
+  await invalidateEpisodeSubtitleCache(track.episodeId);
+  return track;
 }
 
 export async function saveSubtitleCues(trackId: number, cues: CueInput[]) {
@@ -383,7 +546,7 @@ export async function saveSubtitleCues(trackId: number, cues: CueInput[]) {
 
   const track = await prisma.subtitleTrack.findUnique({
     where: { id: trackId },
-    select: { id: true },
+    select: { id: true, episodeId: true },
   });
   if (!track) throw notFound("Track subtitle tidak ditemukan");
 
@@ -393,7 +556,7 @@ export async function saveSubtitleCues(trackId: number, cues: CueInput[]) {
     .sort(cueOrder)
     .map((cue, index) => ({ ...cue, orderIndex: index }));
 
-  return prisma.$transaction(async (tx) => {
+  const saved = await prisma.$transaction(async (tx) => {
     await tx.subtitleCue.deleteMany({ where: { trackId } });
     if (normalized.length > 0) {
       await tx.subtitleCue.createMany({
@@ -407,12 +570,24 @@ export async function saveSubtitleCues(trackId: number, cues: CueInput[]) {
       },
     });
   });
+
+  await invalidateEpisodeSubtitleCache(saved.episodeId);
+  return saved;
 }
 
 export async function deleteSubtitleCue(cueId: number) {
   if (!Number.isInteger(cueId) || cueId <= 0)
     throw badRequest("cue id tidak valid");
+  const cue = await prisma.subtitleCue.findUnique({
+    where: { id: cueId },
+    select: {
+      track: { select: { episodeId: true } },
+    },
+  });
+  if (!cue) throw notFound("Cue subtitle tidak ditemukan");
+
   await prisma.subtitleCue.delete({ where: { id: cueId } });
+  await invalidateEpisodeSubtitleCache(cue.track.episodeId);
   return { message: "deleted" };
 }
 
@@ -438,19 +613,40 @@ export async function exportSubtitleTrackVtt(
   return cuesToVtt(track.cues);
 }
 
+export async function exportSubtitleTrackVttByServerId(
+  episodeId: number,
+  serverId: number,
+  language: string,
+) {
+  if (!Number.isInteger(serverId) || serverId <= 0)
+    throw badRequest("serverId tidak valid");
+
+  const server = await prisma.server.findFirst({
+    where: { id: serverId, episodeId },
+    select: { value: true },
+  });
+
+  if (!server) throw notFound("Server tidak ditemukan");
+  return exportSubtitleTrackVtt(episodeId, server.value, language);
+}
+
 export async function importSubtitleFile(
-  input: TrackInput,
+  input: ImportSubtitleInput,
   file?: UploadedSubtitle,
 ) {
-  const track = await createSubtitleTrack(input);
+  const remoteFile = !file && input.sourceUrl
+    ? await fetchRemoteSubtitle(input.sourceUrl)
+    : null;
   const source =
     file?.buffer.toString("utf8") ??
-    cleanString((input as TrackInput & { content?: string }).content);
-  if (!source) throw badRequest("File subtitle wajib diisi");
+    remoteFile?.buffer.toString("utf8") ??
+    cleanString(input.content);
+  if (!source) throw badRequest("File, URL, atau teks subtitle wajib diisi");
 
   const cues = parseSubtitleCues(source);
   if (cues.length === 0)
     throw badRequest("File subtitle tidak memiliki cue valid");
 
+  const track = await createSubtitleTrack(input);
   return saveSubtitleCues(track.id, cues);
 }

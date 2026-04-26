@@ -42,6 +42,36 @@ function toArray(value: string | undefined) {
     .filter(Boolean);
 }
 
+function hasSubtitleTrackCues(payload: Record<string, unknown>) {
+  return (
+    Array.isArray(payload.subtitleTracks) &&
+    payload.subtitleTracks.some(
+      (track) => !!track && typeof track === "object" && "cues" in track,
+    )
+  );
+}
+
+function stripPublicSubtitleTrackCues<T extends Record<string, unknown>>(
+  payload: T,
+): T {
+  if (!Array.isArray(payload.subtitleTracks)) return payload;
+
+  return {
+    ...payload,
+    subtitleTracks: payload.subtitleTracks.map((track) => {
+      if (!track || typeof track !== "object" || !("cues" in track)) {
+        return track;
+      }
+
+      const { cues: _cues, ...publicTrack } = track as Record<
+        string,
+        unknown
+      >;
+      return publicTrack;
+    }),
+  };
+}
+
 function parseStatus(
   value: string | undefined,
 ): "ongoing" | "completed" | null {
@@ -1450,9 +1480,14 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     try {
       const cached = await getCache<Record<string, unknown>>(cacheKey);
       if (cached) {
+        const publicData = stripPublicSubtitleTrackCues(cached);
+        if (hasSubtitleTrackCues(cached)) {
+          await setCache(cacheKey, publicData, CACHE_TTL.EPISODE_DETAIL);
+        }
+
         return ok(reply, {
           message: "Episode detail fetched successfully",
-          data: cached,
+          data: publicData,
           meta: { cache: "hit" },
         });
       }
@@ -1507,16 +1542,6 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
               label: true,
               createdAt: true,
               updatedAt: true,
-              cues: {
-                orderBy: [{ orderIndex: "asc" }, { startTime: "asc" }],
-                select: {
-                  id: true,
-                  startTime: true,
-                  endTime: true,
-                  text: true,
-                  orderIndex: true,
-                },
-              },
             },
           },
           anime: {

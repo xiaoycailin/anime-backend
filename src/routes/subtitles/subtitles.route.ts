@@ -9,6 +9,7 @@ import { reviseSubtitleTrackByInstructionStream } from "../../services/subtitle-
 import {
   createSubtitleTrack,
   deleteSubtitleCue,
+  exportSubtitleTrackVttByServerId,
   importSubtitleFile,
   listSubtitleTracks,
   listSubtitles,
@@ -105,6 +106,26 @@ export const subtitlesRoutes: FastifyPluginAsync = async (app) => {
       .header("Cache-Control", "public, max-age=31536000, immutable")
       .type("text/vtt; charset=utf-8")
       .send(fs.createReadStream(filePath));
+  });
+
+  app.get("/:episodeId/:serverId/:langVtt", async (request, reply) => {
+    const { episodeId, serverId, langVtt } = request.params as {
+      episodeId: string;
+      serverId: string;
+      langVtt: string;
+    };
+    const language = langVtt.replace(/\.vtt$/i, "");
+    const content = await exportSubtitleTrackVttByServerId(
+      Number(episodeId),
+      Number(serverId),
+      language,
+    );
+
+    return reply
+      .header("Access-Control-Allow-Origin", "*")
+      .header("Cache-Control", "no-store")
+      .type("text/vtt; charset=utf-8")
+      .send(content);
   });
 
   app.get(
