@@ -34,8 +34,27 @@ export function signAccessToken(
 export function signRefreshToken(
   app: FastifyInstance,
   user: { id: number; email: string; username: string; role: string },
+  jti: string,
 ) {
-  return app.jwt.sign(user, { expiresIn: REFRESH_TOKEN_TTL });
+  return app.jwt.sign(user, { expiresIn: REFRESH_TOKEN_TTL, jti });
+}
+
+export const REFRESH_TTL_MS = parseTtlMs(REFRESH_TOKEN_TTL);
+
+function parseTtlMs(ttl: string): number {
+  const match = /^(\d+)\s*([smhd])$/.exec(ttl.trim());
+  if (!match) return 7 * 24 * 60 * 60 * 1000;
+  const value = Number(match[1]);
+  const unit = match[2];
+  const factor =
+    unit === "s"
+      ? 1000
+      : unit === "m"
+        ? 60_000
+        : unit === "h"
+          ? 3_600_000
+          : 86_400_000;
+  return value * factor;
 }
 
 export const refreshCookieOptions = {

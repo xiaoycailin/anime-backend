@@ -84,6 +84,24 @@ model User {
   resolvedReports CommentReport[] @relation("CommentReportResolver")
   expLogs       ExpLog[]
   decorations   UserDecoration[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id           String    @id @db.VarChar(36)
+  userId       Int       @map("user_id")
+  expiresAt    DateTime  @map("expires_at")
+  revokedAt    DateTime? @map("revoked_at")
+  replacedById String?   @map("replaced_by_id") @db.VarChar(36)
+  userAgent    String?   @map("user_agent") @db.VarChar(255)
+  ip           String?   @db.VarChar(64)
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 // ─── DECORATION (avatar frames, etc) ──────────────────────────────────────────

@@ -1,11 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
 import { compare, hash } from "bcryptjs";
 import { prisma } from "../../lib/prisma";
+import { refreshCookieOptions, signAccessToken } from "../../plugins/auth";
 import {
-  refreshCookieOptions,
-  signAccessToken,
-  signRefreshToken,
-} from "../../plugins/auth";
+  RefreshTokenError,
+  issueRefreshToken,
+  revokeRefreshToken,
+  rotateRefreshToken,
+} from "../../services/refreshToken.service";
 import {
   calculateLevel,
   getCultivationBadge,
@@ -146,11 +148,10 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       role: user.role,
     };
 
-    reply.setCookie(
-      "refreshToken",
-      signRefreshToken(app, tokenUser),
-      refreshCookieOptions,
-    );
+    const accessToken = signAccessToken(app, tokenUser);
+    const refreshToken = await issueRefreshToken(app, tokenUser, request);
+
+    reply.setCookie("refreshToken", refreshToken, refreshCookieOptions);
 
     await syncUnlocks(user.id, user.level).catch(() => null);
     const equipped = await getEquippedDecorations(user.id);
@@ -158,53 +159,57 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     return ok(reply, {
       message: "Login successful",
       data: {
-        accessToken: signAccessToken(app, tokenUser),
+        accessToken,
+        refreshToken,
         user: publicUser(user, equipped),
       },
     });
   });
 
-  app.post(
-    "/refresh",
-    { preHandler: app.authenticate },
-    async (request, reply) => {
-      // get token by autorization header
-      let token = null;
-      if (request) {
-        const authHeader = request.headers["authorization"] || "";
-        if (authHeader.startsWith("Bearer ")) {
-          token = authHeader.slice(7);
-        }
+  app.post("/refresh", async (request, reply) => {
+    const body = (request.body ?? {}) as { refreshToken?: string };
+    const token =
+      body.refreshToken?.trim() || request.cookies?.refreshToken || null;
+
+    if (!token) throw unauthorized("Refresh token tidak ditemukan");
+
+    let rotated;
+    try {
+      rotated = await rotateRefreshToken(app, token, request);
+    } catch (err) {
+      if (err instanceof RefreshTokenError) {
+        reply.clearCookie("refreshToken", { path: "/" });
+        throw unauthorized(err.message);
       }
+      throw err;
+    }
 
-      if (!token) throw unauthorized("Refresh token tidak ditemukan");
+    const user = await prisma.user.findUnique({
+      where: { id: rotated.user.id },
+      select: { id: true, email: true, username: true, role: true },
+    });
 
-      try {
-        const payload = app.jwt.verify<{
-          id: number;
-          email: string;
-          username: string;
-          role?: string;
-        }>(token);
+    if (!user) {
+      reply.clearCookie("refreshToken", { path: "/" });
+      throw unauthorized("Refresh token tidak valid");
+    }
 
-        const user = await prisma.user.findUnique({
-          where: { id: payload.id },
-          select: { id: true, email: true, username: true, role: true },
-        });
+    reply.setCookie("refreshToken", rotated.refreshToken, refreshCookieOptions);
 
-        if (!user) throw unauthorized("Refresh token tidak valid");
+    return ok(reply, {
+      message: "Token refreshed",
+      data: {
+        accessToken: signAccessToken(app, user),
+        refreshToken: rotated.refreshToken,
+      },
+    });
+  });
 
-        return ok(reply, {
-          message: "Token refreshed",
-          data: { accessToken: signAccessToken(app, user) },
-        });
-      } catch {
-        throw unauthorized("Refresh token tidak valid atau kedaluwarsa");
-      }
-    },
-  );
-
-  app.post("/logout", async (_request, reply) => {
+  app.post("/logout", async (request, reply) => {
+    const presented = request.cookies?.refreshToken;
+    if (presented) {
+      await revokeRefreshToken(app, presented);
+    }
     reply.clearCookie("refreshToken", { path: "/" });
     return ok(reply, { message: "ok", data: { message: "ok" } });
   });
