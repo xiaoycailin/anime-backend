@@ -5,7 +5,13 @@ import { addExp } from "../../services/exp.service";
 import { ok, sendError } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import { normalizeTitle } from "../../utils/season-parser";
-import { CACHE_KEYS, CACHE_TTL, getCache, setCache } from "../../lib/cache";
+import {
+  CACHE_KEYS,
+  CACHE_TTL,
+  getCache,
+  setCache,
+  setCacheField,
+} from "../../lib/cache";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -150,13 +156,28 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
       },
       select: {
         id: true,
+        slug: true,
         views: true,
+        anime: {
+          select: {
+            slug: true,
+          },
+        },
       },
     });
 
+    await setCacheField<Record<string, unknown>>(
+      CACHE_KEYS.episodeDetail(episode.anime.slug, episode.slug),
+      { views: episode.views },
+      CACHE_TTL.EPISODE_DETAIL,
+    );
+
     return ok(reply, {
       message: "Episode view recorded successfully",
-      data: episode,
+      data: {
+        id: episode.id,
+        views: episode.views,
+      },
     });
   });
 

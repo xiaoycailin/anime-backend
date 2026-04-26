@@ -19,6 +19,7 @@ import {
   buildQueryKey,
   getCache,
   setCache,
+  setCacheField,
 } from "../../lib/cache";
 
 function toPositiveInt(value: unknown, fallback: number) {
@@ -865,6 +866,12 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           trendingScore: true,
         },
       });
+
+      await setCacheField<Record<string, unknown>>(
+        CACHE_KEYS.animeDetail(slug),
+        { views: anime.views, trendingScore: anime.trendingScore },
+        CACHE_TTL.ANIME_DETAIL,
+      );
 
       queueTrendingScoreRecalculation(anime.id);
 
