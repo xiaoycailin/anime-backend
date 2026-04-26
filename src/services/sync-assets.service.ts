@@ -148,6 +148,10 @@ function markProcessed(asset: DecodedAsset) {
   processedUntil.set(processedCacheKey(asset), Date.now() + PROCESSED_TTL_MS);
 }
 
+function assetLogId(asset: DecodedAsset) {
+  return `${asset.context}:${asset.id}:${asset.field}:${asset.sourceHash}`;
+}
+
 async function downloadImage(url: string) {
   const response = await fetch(url, {
     headers: {
@@ -176,13 +180,32 @@ async function downloadImage(url: string) {
   };
 }
 
-async function prepareAsset(asset: DecodedAsset): Promise<PreparedAsset | null> {
+async function prepareAsset(
+  asset: DecodedAsset,
+  logger: Logger,
+): Promise<PreparedAsset | null> {
   if (await r2ObjectExists(asset.key)) {
+    logger.info?.(
+      `[sync-assets] r2 exists ${assetLogId(asset)} key=${asset.key}`,
+    );
     return { ...asset, uploaded: false };
   }
 
+  logger.info?.(
+    `[sync-assets] download start ${assetLogId(asset)} url=${asset.url}`,
+  );
   const image = await downloadImage(asset.url);
-  if (!image) return null;
+  if (!image) {
+    logger.info?.(`[sync-assets] download skipped ${assetLogId(asset)}`);
+    return null;
+  }
+
+  logger.info?.(
+    `[sync-assets] download ok ${assetLogId(asset)} bytes=${image.buffer.length} contentType=${image.contentType}`,
+  );
+  logger.info?.(
+    `[sync-assets] r2 upload start ${assetLogId(asset)} key=${asset.key}`,
+  );
 
   await uploadBufferToR2({
     buffer: image.buffer,
@@ -199,11 +222,24 @@ async function prepareAsset(asset: DecodedAsset): Promise<PreparedAsset | null> 
     },
   });
 
+  logger.info?.(
+    `[sync-assets] r2 upload ok ${assetLogId(asset)} url=${asset.cdnUrl}`,
+  );
+
   return { ...asset, uploaded: true };
 }
 
 async function applyBatchUpdates(assets: PreparedAsset[], logger: Logger) {
-  if (assets.length === 0) return;
+  if (assets.length === 0) {
+    logger.info?.("[sync-assets] db batch skipped assets=0");
+    return;
+  }
+
+  const uploadedCount = assets.filter((asset) => asset.uploaded).length;
+  const existingCount = assets.length - uploadedCount;
+  logger.info?.(
+    `[sync-assets] db batch update start assets=${assets.length} uploaded=${uploadedCount} existing=${existingCount}`,
+  );
 
   const operations = assets.map((asset) => {
     if (asset.context === "anime") {
@@ -234,7 +270,7 @@ async function applyBatchUpdates(assets: PreparedAsset[], logger: Logger) {
   }
 
   logger.info?.(
-    `[sync-assets] db batch updated ${changedCount}/${assets.length} assets`,
+    `[sync-assets] db batch update ok changed=${changedCount} assets=${assets.length} uploaded=${uploadedCount} existing=${existingCount}`,
   );
 }
 
@@ -243,7 +279,7 @@ async function processAssets(assets: DecodedAsset[], logger: Logger) {
 
   for (const asset of assets) {
     try {
-      const prepared = await prepareAsset(asset);
+      const prepared = await prepareAsset(asset, logger);
       if (prepared) preparedAssets.push(prepared);
     } catch (error) {
       logger.error?.(
@@ -276,6 +312,7 @@ export function enqueueAssetSync(rawAssets: SyncAssetInput[], logger: Logger) {
   const assets = Array.from(unique.values());
   if (assets.length === 0) return false;
 
+  logger.info?.(`[sync-assets] queue accepted assets=${assets.length}`);
   isProcessing = true;
   setImmediate(() => {
     processAssets(assets, logger)
