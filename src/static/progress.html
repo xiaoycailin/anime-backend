@@ -652,7 +652,7 @@
 
     <div class="controls">
         <label>monitor url &gt;</label>
-        <input type="text" id="urlInput" placeholder="https://anichin.cafe/seri/?page=1" />
+        <input type="text" id="urlInput" placeholder="https://anichin.cafe/seri/?page=1&order=update" />
         <button class="btn primary" onclick="startMonitor()">Monitor</button>
         <button class="btn" onclick="togglePause()" id="pauseBtn">Pause</button>
         <button class="btn danger" onclick="deleteProgress()">Delete Progress</button>
@@ -724,6 +724,7 @@
     <script>
         const BASE_URL = "http://localhost:3000";
         const BASE_SCRAPE_URL = "https://anichin.cafe/seri/";
+        const SCRAPE_ORDER = "update";
         const TOTAL_PAGES = 30;
         const REFRESH_MS = 500;
 
@@ -749,8 +750,15 @@
             pageButtonsEl.appendChild(btn);
         }
 
+        function buildPageUrl(page) {
+            const url = new URL(BASE_SCRAPE_URL);
+            url.searchParams.set("page", String(page));
+            url.searchParams.set("order", SCRAPE_ORDER);
+            return url.toString();
+        }
+
         function selectPage(page) {
-            const url = `${BASE_SCRAPE_URL}?page=${page}`;
+            const url = buildPageUrl(page);
             document.getElementById("urlInput").value = url;
             document.querySelectorAll(".page-btn").forEach((b) =>
                 b.classList.toggle("active", parseInt(b.dataset.page) === page)
@@ -819,7 +827,7 @@
             for (let i = 0; i < queue.length; i++) {
                 if (queueCancelled) break;
                 const item = queue[i];
-                const url = `${BASE_SCRAPE_URL}?page=${item.page}`;
+                const url = buildPageUrl(item.page);
 
                 item.status = "running";
                 renderQueueBadges();

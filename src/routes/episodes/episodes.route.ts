@@ -93,6 +93,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           date: true,
           createdAt: true,
           slug: true,
+          thumbnail: true,
           anime: {
             select: {
               slug: true,
@@ -111,7 +112,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         time:
           formatRelativeTime(item.createdAt) ||
           formatRelativeTime(item.anime.updatedAt),
-        thumbnail: item.anime.thumbnail,
+        thumbnail: item.thumbnail ?? item.anime.thumbnail,
         href: `/anime/${item.anime.slug}/${item.slug}`,
       }));
 

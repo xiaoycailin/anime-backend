@@ -450,6 +450,7 @@ model Episode {
   slug    String  @unique @db.VarChar(255)
   number  Int
   title   String  @db.Text
+  thumbnail String? @db.Text
   sub     String? @db.VarChar(20)
   date    String? @db.VarChar(50)
   status  String  @default("published") @db.VarChar(20)
