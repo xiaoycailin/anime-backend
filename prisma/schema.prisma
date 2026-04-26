@@ -495,9 +495,11 @@ model Server {
   episodeId Int
   label     String @db.Text
   value     String @db.Text // iframe src URL
+  isPrimary Boolean @default(false)
 
   episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
 
+  @@index([episodeId, isPrimary])
   @@map("servers")
 }
 

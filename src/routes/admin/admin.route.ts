@@ -81,6 +81,7 @@ type EpisodeBody = {
 type ServerBody = {
   label?: string;
   value?: string;
+  isPrimary?: boolean;
 };
 
 type DecorationBody = {
@@ -743,7 +744,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const episodeId = Number((request.params as { id: string }).id);
     const servers = await prisma.server.findMany({
       where: { episodeId },
-      orderBy: { id: "asc" },
+      orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
     });
     return ok(reply, { data: servers });
   });
@@ -753,8 +754,24 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const body = request.body as ServerBody;
     if (!body.label || !body.value)
       throw badRequest("Label dan URL wajib diisi");
-    const server = await prisma.server.create({
-      data: { episodeId, label: body.label, value: body.value },
+    const label = body.label;
+    const value = body.value;
+    const isPrimary = body.isPrimary === true;
+    const server = await prisma.$transaction(async (tx) => {
+      if (isPrimary) {
+        await tx.server.updateMany({
+          where: { episodeId },
+          data: { isPrimary: false },
+        });
+      }
+      return tx.server.create({
+        data: {
+          episodeId,
+          label,
+          value,
+          isPrimary,
+        },
+      });
     });
 
     const episode = await prisma.episode.findUnique({
@@ -801,6 +818,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     });
     if (!existing) throw notFound("Server tidak ditemukan");
     const server = await prisma.$transaction(async (tx) => {
+      if (body.isPrimary === true) {
+        await tx.server.updateMany({
+          where: { episodeId: existing.episodeId, id: { not: id } },
+          data: { isPrimary: false },
+        });
+      }
       const updated = await tx.server.update({
         where: { id },
         data: body as any,

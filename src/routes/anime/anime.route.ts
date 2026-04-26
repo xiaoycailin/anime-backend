@@ -1475,11 +1475,12 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           views: true,
           skipIntroSeconds: true,
           servers: {
-            orderBy: { id: "asc" },
+            orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
             select: {
               id: true,
               label: true,
               value: true,
+              isPrimary: true,
             },
           },
           subtitles: {
