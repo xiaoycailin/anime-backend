@@ -1464,6 +1464,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           title: true,
           sub: true,
           date: true,
+          createdAt: true,
           views: true,
           skipIntroSeconds: true,
           servers: {
@@ -1791,6 +1792,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         title: episode.title,
         sub: episode.sub,
         date: episode.date,
+        createdAt: episode.createdAt,
         views: episode.views,
         skipIntroSeconds: episode.skipIntroSeconds,
         episodes: episode.anime.episodes,
