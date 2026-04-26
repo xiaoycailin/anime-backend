@@ -19,6 +19,9 @@ fi
 echo "Generating prisma client..."
 npx prisma generate
 
+echo "DB Push prisma client..."
+npx prisma db push
+
 echo "Building backend..."
 npm run build
 
