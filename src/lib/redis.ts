@@ -58,6 +58,16 @@ function createRedisClient(): Redis {
 
 export const redis: Redis = globalForRedis.redis ?? createRedisClient();
 
+export function createRedisSubscriber(): Redis {
+  // Subscribe connections cannot share state with the main client.
+  // Use the same options so keyPrefix ("app:") is applied to channels too.
+  const client = new Redis(buildRedisOptions());
+  client.on("error", (error) => {
+    console.error("[redis-sub] error:", error.message);
+  });
+  return client;
+}
+
 if (process.env.NODE_ENV !== "production") {
   globalForRedis.redis = redis;
 }

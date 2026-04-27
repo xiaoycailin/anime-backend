@@ -261,7 +261,7 @@ async function assembleChunksToFile(input: {
   }
 }
 
-async function setEpisodeR2Server(input: {
+export async function setEpisodeR2Server(input: {
   episodeId: number;
   masterUrl: string;
 }) {

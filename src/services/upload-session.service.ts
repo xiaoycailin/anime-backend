@@ -23,11 +23,28 @@ export type UploadSessionStatus =
   | "failed"
   | "expired";
 
+export type UploadSessionMode = "file" | "url";
+
+export type UrlSourceInput = {
+  resolution: number;
+  url: string;
+};
+
+export type UrlSourceProgress = {
+  resolution: number;
+  url: string;
+  totalSegments: number | null;
+  completedSegments: number;
+  status: "pending" | "fetching-playlist" | "uploading" | "completed" | "failed";
+  errorMessage?: string | null;
+};
+
 export type UploadSessionRecord = {
   id: string;
   episodeId: number;
   sesid: string | null;
   status: UploadSessionStatus;
+  mode: UploadSessionMode;
   initialResolution: number;
   totalChunks: number | null;
   receivedChunks: number;
@@ -39,6 +56,8 @@ export type UploadSessionRecord = {
   fileName: string | null;
   fileSize: number | null;
   fileLastModified: number | null;
+  urlSources: UrlSourceInput[] | null;
+  urlProgress: UrlSourceProgress[] | null;
   videoId: string | null;
   masterPlaylistUrl: string | null;
   errorMessage: string | null;
@@ -47,7 +66,7 @@ export type UploadSessionRecord = {
   updatedAt: Date;
 };
 
-export const VALID_RESOLUTIONS = [144, 240, 480, 720, 1080] as const;
+export const VALID_RESOLUTIONS = [144, 240, 360, 480, 720, 1080, 2160] as const;
 export type ValidResolution = (typeof VALID_RESOLUTIONS)[number];
 
 export function isValidResolution(value: unknown): value is ValidResolution {
@@ -106,6 +125,7 @@ function toRecord(row: any): UploadSessionRecord {
     episodeId: row.episodeId,
     sesid: row.sesid ?? null,
     status: row.status as UploadSessionStatus,
+    mode: (row.mode as UploadSessionMode) ?? "file",
     initialResolution: row.initialResolution,
     totalChunks: row.totalChunks ?? null,
     receivedChunks: row.receivedChunks ?? 0,
@@ -129,6 +149,12 @@ function toRecord(row: any): UploadSessionRecord {
         : typeof row.fileLastModified === "bigint"
           ? Number(row.fileLastModified)
           : Number(row.fileLastModified),
+    urlSources: Array.isArray(row.urlSources)
+      ? (row.urlSources as UrlSourceInput[])
+      : null,
+    urlProgress: Array.isArray(row.urlProgress)
+      ? (row.urlProgress as UrlSourceProgress[])
+      : null,
     videoId: row.videoId ?? null,
     masterPlaylistUrl: row.masterPlaylistUrl ?? null,
     errorMessage: row.errorMessage ?? null,
@@ -142,6 +168,9 @@ export async function createUploadSession(input: {
   episodeId: number;
   sesid?: string | null;
   initialResolution?: number;
+  mode?: UploadSessionMode;
+  urlSources?: UrlSourceInput[] | null;
+  urlProgress?: UrlSourceProgress[] | null;
 }): Promise<UploadSessionRecord> {
   const id = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + UPLOAD_SESSION_TTL_MS);
@@ -155,8 +184,11 @@ export async function createUploadSession(input: {
       episodeId: input.episodeId,
       sesid: input.sesid ?? null,
       status: "idle",
+      mode: input.mode ?? "file",
       initialResolution,
       resolutionsDone: [],
+      urlSources: input.urlSources ?? undefined,
+      urlProgress: input.urlProgress ?? undefined,
       expiresAt,
     },
   });
@@ -254,6 +286,7 @@ export async function appendEncodingLog(
     await redis.rpush(key, JSON.stringify(entry));
     await redis.ltrim(key, -200, -1);
     await redis.pexpire(key, UPLOAD_SESSION_TTL_MS);
+    await publishUploadEvent(uploadId, { type: "log", entry });
   } catch {
     // Logging must not break the upload or encoding pipeline.
   }
@@ -299,6 +332,7 @@ export async function updateSessionStatus(
   uploadId: string,
   data: {
     status?: UploadSessionStatus;
+    mode?: UploadSessionMode;
     totalChunks?: number;
     receivedChunks?: number;
     uploadProgress?: number;
@@ -309,10 +343,13 @@ export async function updateSessionStatus(
     fileName?: string | null;
     fileSize?: number | null;
     fileLastModified?: number | null;
+    urlSources?: UrlSourceInput[] | null;
+    urlProgress?: UrlSourceProgress[] | null;
     videoId?: string | null;
     masterPlaylistUrl?: string | null;
     errorMessage?: string | null;
     expiresAt?: Date;
+    initialResolution?: number;
   },
 ): Promise<UploadSessionRecord> {
   const updateData: any = { ...data };
@@ -328,7 +365,9 @@ export async function updateSessionStatus(
     where: { id: uploadId },
     data: updateData,
   });
-  return toRecord(row);
+  const record = toRecord(row);
+  void publishUploadEvent(uploadId, { type: "status", session: serializeSession(record) });
+  return record;
 }
 
 export async function expireSessionImmediately(uploadId: string) {
@@ -356,6 +395,61 @@ export async function failSession(uploadId: string, message: string) {
     // ignore
   }
   await redis.del(redisSessionKey(uploadId));
+}
+
+// ── SSE / Realtime events ────────────────────────────────────────────────────
+
+const REDIS_EVENT_CHANNEL_PREFIX = "upload:events:";
+
+export function uploadEventChannel(uploadId: string) {
+  return `${REDIS_EVENT_CHANNEL_PREFIX}${uploadId}`;
+}
+
+export type UploadEventPayload =
+  | {
+      type: "status";
+      session: ReturnType<typeof serializeSession>;
+    }
+  | {
+      type: "log";
+      entry: UploadEncodingLog;
+    };
+
+export async function publishUploadEvent(
+  uploadId: string,
+  payload: UploadEventPayload,
+) {
+  try {
+    await redis.publish(uploadEventChannel(uploadId), JSON.stringify(payload));
+  } catch {
+    // SSE pub must never break the upload pipeline.
+  }
+}
+
+export function serializeSession(session: UploadSessionRecord) {
+  return {
+    uploadId: session.id,
+    episodeId: session.episodeId,
+    status: session.status,
+    mode: session.mode,
+    expiresAt: session.expiresAt.toISOString(),
+    totalChunks: session.totalChunks,
+    receivedChunks: session.receivedChunks,
+    uploadProgress: session.uploadProgress,
+    encodingProgress: session.encodingProgress,
+    r2UploadProgress: session.r2UploadProgress,
+    currentResolution: session.currentResolution,
+    resolutionsCompleted: session.resolutionsDone,
+    masterPlaylistUrl: session.masterPlaylistUrl,
+    videoId: session.videoId,
+    errorMessage: session.errorMessage,
+    fileName: session.fileName,
+    fileSize: session.fileSize,
+    fileLastModified: session.fileLastModified,
+    initialResolution: session.initialResolution,
+    urlSources: session.urlSources,
+    urlProgress: session.urlProgress,
+  };
 }
 
 export async function ensureSessionUsable(

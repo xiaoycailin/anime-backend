@@ -640,11 +640,17 @@ enum UploadSessionStatus {
   expired
 }
 
+enum UploadSessionMode {
+  file
+  url
+}
+
 model UploadSession {
   id                String              @id @db.VarChar(36)
   episodeId         Int                 @map("episode_id")
   sesid             String?             @db.VarChar(255)
   status            UploadSessionStatus @default(idle)
+  mode              UploadSessionMode   @default(file)
   initialResolution Int                 @default(720) @map("initial_resolution")
   totalChunks       Int?                @map("total_chunks")
   receivedChunks    Int                 @default(0) @map("received_chunks")
@@ -656,6 +662,8 @@ model UploadSession {
   fileName          String?             @map("file_name") @db.VarChar(255)
   fileSize          BigInt?             @map("file_size")
   fileLastModified  BigInt?             @map("file_last_modified")
+  urlSources        Json?               @map("url_sources")
+  urlProgress       Json?               @map("url_progress")
   videoId           String?             @map("video_id") @db.VarChar(40)
   masterPlaylistUrl String?             @map("master_playlist_url") @db.Text
   errorMessage      String?             @map("error_message") @db.Text

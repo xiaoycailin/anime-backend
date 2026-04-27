@@ -28,6 +28,14 @@ export const RESOLUTION_LADDER: Record<
     maxrate: "480k",
     bufsize: "800k",
   },
+  360: {
+    width: 640,
+    height: 360,
+    videoBitrate: "700k",
+    audioBitrate: "96k",
+    maxrate: "850k",
+    bufsize: "1400k",
+  },
   480: {
     width: 854,
     height: 480,
@@ -51,6 +59,14 @@ export const RESOLUTION_LADDER: Record<
     audioBitrate: "192k",
     maxrate: "6000k",
     bufsize: "10000k",
+  },
+  2160: {
+    width: 3840,
+    height: 2160,
+    videoBitrate: "16000k",
+    audioBitrate: "256k",
+    maxrate: "20000k",
+    bufsize: "32000k",
   },
 };
 
@@ -271,6 +287,6 @@ export function buildMasterPlaylist(input: {
 export function resolutionsToProcess(
   initialResolution: number,
 ): number[] {
-  const ladders = [144, 240, 480, 720, 1080];
+  const ladders = [144, 240, 360, 480, 720, 1080, 2160];
   return ladders.filter((res) => res <= initialResolution);
 }
