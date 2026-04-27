@@ -1,4 +1,10 @@
-import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import crypto from "crypto";
 import path from "path";
 
@@ -19,6 +25,22 @@ type R2UploadInput = {
   folder?: string;
   key?: string;
   metadata?: Record<string, string>;
+};
+
+export type R2ObjectSummary = {
+  key: string;
+  url: string;
+  filename: string;
+  size: number;
+  lastModified: string | null;
+  etag: string | null;
+};
+
+export type R2ObjectListResult = {
+  items: R2ObjectSummary[];
+  nextCursor: string | null;
+  bucket: string;
+  prefix: string;
 };
 
 let client: S3Client | null = null;
@@ -129,6 +151,61 @@ export async function uploadBufferToR2(input: R2UploadInput) {
     filename,
     contentType: input.contentType,
     size: input.buffer.length,
+    bucket: config.bucket,
+  };
+}
+
+export async function listR2Objects(input: {
+  prefix?: string;
+  cursor?: string | null;
+  limit?: number;
+} = {}): Promise<R2ObjectListResult> {
+  const config = getR2Config();
+  const prefix = (input.prefix ?? "").replace(/^\/+/, "");
+  const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 50)));
+
+  const response = await getR2Client().send(
+    new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: prefix,
+      MaxKeys: limit,
+      ContinuationToken: input.cursor || undefined,
+    }),
+  );
+
+  return {
+    items: (response.Contents ?? [])
+      .filter((item) => Boolean(item.Key))
+      .map((item) => {
+        const key = item.Key ?? "";
+        return {
+          key,
+          url: publicUrlForKey(config.publicUrl, key),
+          filename: path.basename(key),
+          size: Number(item.Size ?? 0),
+          lastModified: item.LastModified?.toISOString() ?? null,
+          etag: item.ETag?.replace(/^"|"$/g, "") ?? null,
+        };
+      }),
+    nextCursor: response.NextContinuationToken ?? null,
+    bucket: config.bucket,
+    prefix,
+  };
+}
+
+export async function deleteR2Object(key: string) {
+  const config = getR2Config();
+  const cleanKey = key.replace(/^\/+/, "");
+
+  await getR2Client().send(
+    new DeleteObjectCommand({
+      Bucket: config.bucket,
+      Key: cleanKey,
+    }),
+  );
+
+  return {
+    key: cleanKey,
     bucket: config.bucket,
   };
 }

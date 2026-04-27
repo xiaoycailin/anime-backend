@@ -1,11 +1,20 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { Comment, CommentReaction, ReactionType } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
-import { addExp, getCultivationBadge } from "../../services/exp.service";
+import {
+  addExp,
+  getCultivationBadge,
+  getLevelProgress,
+} from "../../services/exp.service";
 import {
   getEquippedDecorationsForUsers,
   type EquippedDecorationsDTO,
 } from "../../services/decoration.service";
+import {
+  emptyProfileStats,
+  getProfileStatsForUsers,
+  type ProfileStatsDTO,
+} from "../../services/user-profile.service";
 import { createUserNotification } from "../../services/notification.service";
 import { HttpError, badRequest, forbidden, notFound } from "../../utils/http-error";
 import { created, ok, paginated } from "../../utils/response";
@@ -83,7 +92,8 @@ async function optionalUserId(app: Parameters<FastifyPluginAsync>[0], request: F
 function formatComment(
   comment: CommentRecord,
   userId: number | null,
-  equipped: EquippedDecorationsDTO = { frame: null, nametag: null },
+  equipped: EquippedDecorationsDTO = { frame: null, nametag: null, effects: [] },
+  profileStats: ProfileStatsDTO = emptyProfileStats(),
 ) {
   const likeCount = comment.reactions.filter((item) => item.type === "LIKE").length;
   const dislikeCount = comment.reactions.filter((item) => item.type === "DISLIKE").length;
@@ -109,8 +119,11 @@ function formatComment(
     user: {
       ...comment.user,
       badge: getCultivationBadge(comment.user.level),
+      levelProgress: getLevelProgress(comment.user.exp, comment.user.level),
       frame: equipped.frame,
       nametag: equipped.nametag,
+      effects: equipped.effects ?? [],
+      profileStats,
     },
   };
 }
@@ -118,6 +131,11 @@ function formatComment(
 async function attachFrames(comments: CommentRecord[]) {
   const userIds = Array.from(new Set(comments.map((c) => c.user.id)));
   return getEquippedDecorationsForUsers(userIds);
+}
+
+async function attachProfileStats(comments: CommentRecord[]) {
+  const userIds = Array.from(new Set(comments.map((c) => c.user.id)));
+  return getProfileStatsForUsers(userIds);
 }
 
 async function findCommentForOwner(id: number, userId: number) {
@@ -226,11 +244,19 @@ export const commentsRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    const frames = await attachFrames(comments);
+    const [frames, profileStats] = await Promise.all([
+      attachFrames(comments),
+      attachProfileStats(comments),
+    ]);
 
     return paginated(reply, {
       items: comments.map((comment) =>
-        formatComment(comment, userId, frames.get(comment.user.id) ?? undefined),
+        formatComment(
+          comment,
+          userId,
+          frames.get(comment.user.id) ?? undefined,
+          profileStats.get(comment.user.id) ?? undefined,
+        ),
       ),
       page,
       limit,
@@ -264,11 +290,19 @@ export const commentsRoutes: FastifyPluginAsync = async (app) => {
       }),
     ]);
 
-    const frames = await attachFrames(comments);
+    const [frames, profileStats] = await Promise.all([
+      attachFrames(comments),
+      attachProfileStats(comments),
+    ]);
 
     return paginated(reply, {
       items: comments.map((comment) =>
-        formatComment(comment, userId, frames.get(comment.user.id) ?? undefined),
+        formatComment(
+          comment,
+          userId,
+          frames.get(comment.user.id) ?? undefined,
+          profileStats.get(comment.user.id) ?? undefined,
+        ),
       ),
       page,
       limit,
@@ -367,14 +401,29 @@ export const commentsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const exp = await addExp(request.user.id, "comment", 10, `comment:${comment.id}`);
-    const frames = await attachFrames([comment]);
+    const commentForResponse =
+      exp.granted && exp.totalExp !== undefined && exp.level !== undefined
+        ? ({
+            ...comment,
+            user: {
+              ...comment.user,
+              exp: exp.totalExp,
+              level: exp.level,
+            },
+          } as CommentRecord)
+        : comment;
+    const [frames, profileStats] = await Promise.all([
+      attachFrames([commentForResponse]),
+      attachProfileStats([commentForResponse]),
+    ]);
 
     return created(reply, {
       message: "Comment posted successfully",
       data: formatComment(
-        comment,
+        commentForResponse,
         request.user.id,
-        frames.get(comment.user.id) ?? undefined,
+        frames.get(commentForResponse.user.id) ?? undefined,
+        profileStats.get(commentForResponse.user.id) ?? undefined,
       ),
       meta: { cooldownRemaining: Math.ceil(COMMENT_COOLDOWN_MS / 1000), exp },
     });
@@ -398,7 +447,10 @@ export const commentsRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
-    const frames = await attachFrames([comment]);
+    const [frames, profileStats] = await Promise.all([
+      attachFrames([comment]),
+      attachProfileStats([comment]),
+    ]);
 
     return ok(reply, {
       message: "Comment updated successfully",
@@ -406,6 +458,7 @@ export const commentsRoutes: FastifyPluginAsync = async (app) => {
         comment,
         request.user.id,
         frames.get(comment.user.id) ?? undefined,
+        profileStats.get(comment.user.id) ?? undefined,
       ),
     });
   });

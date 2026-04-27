@@ -109,10 +109,15 @@ model RefreshToken {
 model Decoration {
   id            Int      @id @default(autoincrement())
   name          String   @db.VarChar(100)
+  // type values: "frame" | "nametag" | "effect"
   type          String   @default("frame") @db.VarChar(40)
   asset         String?  @unique @db.VarChar(255)
   config        Json?
   requiredLevel Int      @default(1) @map("required_level")
+  // Harga dalam EXP. 0 berarti tidak bisa dibeli via EXP (item level-unlock seperti
+  // frame/nametag biasa). > 0 berarti acquisition lewat exchange EXP (dipakai
+  // wajib oleh type "effect").
+  priceExp      Int      @default(0) @map("price_exp")
   isActive      Boolean  @default(true) @map("is_active")
   sortOrder     Int      @default(0) @map("sort_order")
   createdAt     DateTime @default(now()) @map("created_at")
@@ -121,6 +126,7 @@ model Decoration {
   ownedBy UserDecoration[]
 
   @@index([type, requiredLevel])
+  @@index([type, priceExp])
   @@map("decorations")
 }
 

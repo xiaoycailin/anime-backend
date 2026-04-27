@@ -17,7 +17,13 @@ import {
   getEquippedDecorations,
   syncUnlocks,
   type EquippedDecorationDTO,
+  type EquippedEffectDTO,
 } from "../../services/decoration.service";
+import {
+  emptyProfileStats,
+  getProfileStats,
+  type ProfileStatsDTO,
+} from "../../services/user-profile.service";
 import { badRequest, unauthorized } from "../../utils/http-error";
 import { created, ok } from "../../utils/response";
 
@@ -53,6 +59,8 @@ function publicUser(
   extras: {
     frame?: EquippedDecorationDTO;
     nametag?: EquippedDecorationDTO;
+    effects?: EquippedEffectDTO[];
+    profileStats?: ProfileStatsDTO;
   } = {},
 ) {
   const exp = user.exp ?? 0;
@@ -71,6 +79,8 @@ function publicUser(
     levelProgress: getLevelProgress(exp, level),
     frame: extras.frame ?? null,
     nametag: extras.nametag ?? null,
+    effects: extras.effects ?? [],
+    profileStats: extras.profileStats ?? emptyProfileStats(),
     ...(user.createdAt ? { createdAt: user.createdAt } : {}),
   };
 }
@@ -154,14 +164,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     reply.setCookie("refreshToken", refreshToken, refreshCookieOptions);
 
     await syncUnlocks(user.id, user.level).catch(() => null);
-    const equipped = await getEquippedDecorations(user.id);
+    const [equipped, profileStats] = await Promise.all([
+      getEquippedDecorations(user.id),
+      getProfileStats(user.id),
+    ]);
 
     return ok(reply, {
       message: "Login successful",
       data: {
         accessToken,
         refreshToken,
-        user: publicUser(user, equipped),
+        user: publicUser(user, { ...equipped, profileStats }),
       },
     });
   });
@@ -234,11 +247,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (!user) throw unauthorized("User tidak ditemukan");
 
     await syncUnlocks(user.id, user.level).catch(() => null);
-    const equipped = await getEquippedDecorations(user.id);
+    const [equipped, profileStats] = await Promise.all([
+      getEquippedDecorations(user.id),
+      getProfileStats(user.id),
+    ]);
 
     return ok(reply, {
       message: "Profile fetched",
-      data: publicUser(user, equipped),
+      data: publicUser(user, { ...equipped, profileStats }),
     });
   });
 
@@ -272,11 +288,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
-      const equipped = await getEquippedDecorations(user.id);
+      const [equipped, profileStats] = await Promise.all([
+        getEquippedDecorations(user.id),
+        getProfileStats(user.id),
+      ]);
 
       return ok(reply, {
         message: "Profile updated",
-        data: publicUser(user, equipped),
+        data: publicUser(user, { ...equipped, profileStats }),
       });
     } catch (error) {
       if ((error as any).code === "P2002") {

@@ -8,7 +8,8 @@ export type ExpType =
   | "watch_80_bonus"
   | "comment"
   | "episode_like"
-  | "comment_like";
+  | "comment_like"
+  | "decoration_purchase";
 
 type AddExpResult = {
   granted: boolean;
@@ -275,5 +276,6 @@ export async function getUserExpProfile(userId: number) {
     progress,
     frame: equipped.frame,
     nametag: equipped.nametag,
+    effects: equipped.effects,
   };
 }

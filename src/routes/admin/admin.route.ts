@@ -90,14 +90,21 @@ type DecorationBody = {
   asset?: string | null;
   config?: Record<string, unknown> | null;
   requiredLevel?: number;
+  priceExp?: number;
   isActive?: boolean;
   sortOrder?: number;
 };
 
+function normalizeDecorationType(value: unknown): "frame" | "nametag" | "effect" {
+  if (value === "nametag") return "nametag";
+  if (value === "effect") return "effect";
+  return "frame";
+}
+
 function cleanDecorationData(body: DecorationBody) {
   const data: Prisma.DecorationUncheckedUpdateInput = {};
   if (body.name !== undefined) data.name = String(body.name).trim();
-  if (body.type !== undefined) data.type = body.type === "nametag" ? "nametag" : "frame";
+  if (body.type !== undefined) data.type = normalizeDecorationType(body.type);
   if (body.asset !== undefined) {
     const asset = body.asset?.toString().trim();
     data.asset = asset ? asset : null;
@@ -109,12 +116,30 @@ function cleanDecorationData(body: DecorationBody) {
     const level = Math.floor(Number(body.requiredLevel));
     data.requiredLevel = Number.isFinite(level) && level >= 1 ? level : 1;
   }
+  if (body.priceExp !== undefined) {
+    const price = Math.floor(Number(body.priceExp));
+    data.priceExp = Number.isFinite(price) && price >= 0 ? price : 0;
+  }
   if (body.isActive !== undefined) data.isActive = Boolean(body.isActive);
   if (body.sortOrder !== undefined) {
     const sort = Math.floor(Number(body.sortOrder));
     data.sortOrder = Number.isFinite(sort) ? sort : 0;
   }
   return data;
+}
+
+function sanitizeEffectConfig(input: Record<string, unknown> | null | undefined) {
+  const cfg = input ?? {};
+  const src = typeof cfg.src === "string" ? cfg.src.trim() : "";
+  const loop = Boolean(cfg.loop);
+  const rawDuration = Number(cfg.duration);
+  const duration =
+    Number.isFinite(rawDuration) && rawDuration > 0
+      ? Math.min(600000, Math.max(500, Math.floor(rawDuration)))
+      : undefined;
+  const config: Record<string, unknown> = { src, loop };
+  if (duration !== undefined) config.duration = duration;
+  return { config, src, loop, duration };
 }
 
 type BroadcastBody = {
@@ -1369,7 +1394,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const { page, limit, skip } = pageParams(query);
     const where: Prisma.DecorationWhereInput = {
       ...(query.search ? { name: { contains: query.search } } : {}),
-      ...(query.type === "frame" || query.type === "nametag"
+      ...(query.type === "frame" || query.type === "nametag" || query.type === "effect"
         ? { type: query.type }
         : {}),
       ...(query.status === "active"
@@ -1409,10 +1434,29 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.post("/decorations", async (request, reply) => {
     const body = request.body as DecorationBody;
     const name = body.name?.toString().trim();
-    const type = body.type === "nametag" ? "nametag" : "frame";
+    const type = normalizeDecorationType(body.type);
     if (!name) throw badRequest("Nama decoration wajib diisi");
 
-    const data = cleanDecorationData({ ...body, name, type });
+    let normalizedConfig = body.config ?? {};
+
+    if (type === "effect") {
+      const sanitized = sanitizeEffectConfig(body.config);
+      if (!sanitized.src) {
+        throw badRequest("URL sumber (src) wajib diisi untuk profile effect");
+      }
+      normalizedConfig = sanitized.config;
+      const price = Math.floor(Number(body.priceExp ?? 0));
+      if (!Number.isFinite(price) || price <= 0) {
+        throw badRequest("Harga EXP (priceExp) wajib > 0 untuk profile effect");
+      }
+    }
+
+    const data = cleanDecorationData({
+      ...body,
+      name,
+      type,
+      config: normalizedConfig,
+    });
     try {
       const decoration = await prisma.decoration.create({
         data: data as unknown as Prisma.DecorationUncheckedCreateInput,
@@ -1432,10 +1476,31 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/decorations/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const body = request.body as DecorationBody;
+
+    // Cek tipe existing untuk validasi config khusus effect.
+    const existing = await prisma.decoration.findUnique({
+      where: { id },
+      select: { type: true },
+    });
+    if (!existing) throw notFound("Decoration tidak ditemukan");
+
+    const targetType = body.type
+      ? normalizeDecorationType(body.type)
+      : normalizeDecorationType(existing.type);
+
+    let payload: DecorationBody = { ...body };
+    if (targetType === "effect" && body.config !== undefined) {
+      const sanitized = sanitizeEffectConfig(body.config);
+      payload = { ...payload, config: sanitized.config };
+      if (body.config && !sanitized.src) {
+        throw badRequest("URL sumber (src) wajib diisi untuk profile effect");
+      }
+    }
+
     try {
       const decoration = await prisma.decoration.update({
         where: { id },
-        data: cleanDecorationData(body),
+        data: cleanDecorationData(payload),
       });
       return ok(reply, { data: decoration });
     } catch (error) {

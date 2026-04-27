@@ -1,16 +1,29 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+import { calculateLevel } from "./exp.service";
 
 const FRAME_BASE_PATH = "/frame-border";
-const DECORATION_TYPES = ["frame", "nametag"] as const;
+const DECORATION_TYPES = ["frame", "nametag", "effect"] as const;
 
 export type DecorationType = (typeof DECORATION_TYPES)[number];
 
+/** Maksimum profile effect yang bisa di-equip secara bersamaan. */
+export const MAX_EQUIPPED_EFFECTS = 3;
+
 export type NameTagConfig = {
-  style?: "aura" | "glitch" | "cosmic" | "glitch-glasses" | "blood-god";
+  style?: "aura" | "glitch" | "cosmic" | "glitch-glasses" | "blood-god" | "royal";
 };
 
-export type DecorationConfig = NameTagConfig | Record<string, unknown>;
+export type EffectConfig = {
+  src?: string;
+  loop?: boolean;
+  duration?: number;
+};
+
+export type DecorationConfig =
+  | NameTagConfig
+  | EffectConfig
+  | Record<string, unknown>;
 
 const DECORATION_SELECT = {
   id: true,
@@ -19,6 +32,7 @@ const DECORATION_SELECT = {
   asset: true,
   config: true,
   requiredLevel: true,
+  priceExp: true,
   sortOrder: true,
   isActive: true,
 } as const;
@@ -30,6 +44,7 @@ type SelectedDecoration = {
   asset: string | null;
   config: Prisma.JsonValue | null;
   requiredLevel: number;
+  priceExp: number;
   sortOrder: number;
 };
 
@@ -41,6 +56,7 @@ export type DecorationDTO = {
   assetUrl: string | null;
   config: DecorationConfig;
   requiredLevel: number;
+  priceExp: number;
   sortOrder: number;
 };
 
@@ -61,16 +77,32 @@ export type EquippedDecorationDTO = Pick<
   "id" | "name" | "type" | "asset" | "assetUrl" | "config"
 > | null;
 
+export type EquippedEffectDTO = NonNullable<EquippedDecorationDTO>;
+
 export type EquippedFrameDTO = EquippedDecorationDTO;
 export type EquippedNameTagDTO = EquippedDecorationDTO;
 
 export type EquippedDecorationsDTO = {
   frame: EquippedDecorationDTO;
   nametag: EquippedDecorationDTO;
+  effects: EquippedEffectDTO[];
 };
 
+export type PurchaseResultDTO = {
+  decoration: EquippedDecorationDTO;
+  exp: number;
+  level: number;
+  spentExp: number;
+};
+
+function emptyEquipped(): EquippedDecorationsDTO {
+  return { frame: null, nametag: null, effects: [] };
+}
+
 function normalizeType(type: string | null | undefined): DecorationType {
-  return type === "nametag" ? "nametag" : "frame";
+  if (type === "nametag") return "nametag";
+  if (type === "effect") return "effect";
+  return "frame";
 }
 
 function toConfig(config: Prisma.JsonValue | null): DecorationConfig {
@@ -80,9 +112,16 @@ function toConfig(config: Prisma.JsonValue | null): DecorationConfig {
   return {};
 }
 
-function toAssetUrl(decoration: { type: string; asset: string | null }) {
-  if (normalizeType(decoration.type) !== "frame" || !decoration.asset) return null;
-  return `${FRAME_BASE_PATH}/${decoration.asset}`;
+function toAssetUrl(decoration: { type: string; asset: string | null; config: Prisma.JsonValue | null }) {
+  const type = normalizeType(decoration.type);
+  if (type === "frame") {
+    return decoration.asset ? `${FRAME_BASE_PATH}/${decoration.asset}` : null;
+  }
+  if (type === "effect") {
+    const cfg = toConfig(decoration.config) as EffectConfig;
+    return typeof cfg.src === "string" && cfg.src ? cfg.src : null;
+  }
+  return null;
 }
 
 function toDTO(decoration: SelectedDecoration): DecorationDTO {
@@ -94,6 +133,7 @@ function toDTO(decoration: SelectedDecoration): DecorationDTO {
     assetUrl: toAssetUrl(decoration),
     config: toConfig(decoration.config),
     requiredLevel: decoration.requiredLevel,
+    priceExp: decoration.priceExp ?? 0,
     sortOrder: decoration.sortOrder,
   };
 }
@@ -110,11 +150,18 @@ function toEquippedDTO(decoration: SelectedDecoration): EquippedDecorationDTO {
   };
 }
 
+/**
+ * Auto-grant decorations berdasarkan level. Hanya berlaku untuk type "frame" &
+ * "nametag" — type "effect" diakuisisi via exchange EXP, jadi TIDAK boleh
+ * di-auto-grant berdasarkan level.
+ */
 export async function syncUnlocks(userId: number, level: number) {
   const eligible = await prisma.decoration.findMany({
     where: {
       isActive: true,
       requiredLevel: { lte: level },
+      type: { in: ["frame", "nametag"] },
+      priceExp: { lte: 0 },
     },
     select: { id: true },
   });
@@ -149,7 +196,7 @@ export async function listDecorationsForUser(
 ): Promise<ShopDecorationDTO[]> {
   const decorations = await prisma.decoration.findMany({
     where: { isActive: true },
-    orderBy: [{ type: "asc" }, { requiredLevel: "asc" }, { sortOrder: "asc" }, { id: "asc" }],
+    orderBy: [{ type: "asc" }, { sortOrder: "asc" }, { requiredLevel: "asc" }, { id: "asc" }],
     select: DECORATION_SELECT,
   });
 
@@ -167,10 +214,17 @@ export async function listDecorationsForUser(
   const ownedMap = new Map(owned.map((item) => [item.decorationId, item]));
 
   return decorations.map((decoration) => {
+    const dto = toDTO(decoration);
     const ownership = ownedMap.get(decoration.id);
+    // Type "effect": "isUnlocked" hanya benar saat sudah dibeli (priceExp > 0
+    // tidak boleh auto-unlock by level).
+    const isPurchasable = dto.type === "effect" || dto.priceExp > 0;
+    const isUnlocked = isPurchasable
+      ? Boolean(ownership)
+      : level >= dto.requiredLevel;
     return {
-      ...toDTO(decoration),
-      isUnlocked: level >= decoration.requiredLevel,
+      ...dto,
+      isUnlocked,
       isOwned: Boolean(ownership),
       isEquipped: Boolean(ownership?.isEquipped),
       unlockedAt: ownership?.unlockedAt.toISOString() ?? null,
@@ -194,45 +248,100 @@ export async function listOwnedDecorations(
   }));
 }
 
+export type EquipResult =
+  | { ok: true; equipped: EquippedDecorationDTO; type: DecorationType }
+  | {
+      ok: false;
+      reason: "not_owned" | "max_effects_reached";
+      max?: number;
+    };
+
 export async function equipDecoration(
   userId: number,
   decorationId: number,
-): Promise<EquippedDecorationDTO> {
+): Promise<EquipResult> {
   return prisma.$transaction(async (tx) => {
     const owned = await tx.userDecoration.findUnique({
       where: { userId_decorationId: { userId, decorationId } },
       include: { decoration: { select: DECORATION_SELECT } },
     });
 
-    if (!owned || !owned.decoration.isActive) return null;
+    if (!owned || !owned.decoration.isActive) {
+      return { ok: false, reason: "not_owned" } as const;
+    }
 
     const decorationType = normalizeType(owned.decoration.type);
 
-    await tx.userDecoration.updateMany({
-      where: {
-        userId,
-        isEquipped: true,
-        decorationId: { not: decorationId },
-        decoration: { type: decorationType },
-      },
-      data: { isEquipped: false },
-    });
-
-    if (!owned.isEquipped) {
-      await tx.userDecoration.update({
-        where: { id: owned.id },
-        data: { isEquipped: true },
+    if (decorationType === "effect") {
+      // Effect: boleh equip multiple sampai MAX_EQUIPPED_EFFECTS.
+      if (!owned.isEquipped) {
+        const equippedCount = await tx.userDecoration.count({
+          where: {
+            userId,
+            isEquipped: true,
+            decoration: { type: "effect" },
+          },
+        });
+        if (equippedCount >= MAX_EQUIPPED_EFFECTS) {
+          return {
+            ok: false,
+            reason: "max_effects_reached",
+            max: MAX_EQUIPPED_EFFECTS,
+          } as const;
+        }
+        await tx.userDecoration.update({
+          where: { id: owned.id },
+          data: { isEquipped: true },
+        });
+      }
+    } else {
+      // Frame / nametag: max 1 — unequip yang lama.
+      await tx.userDecoration.updateMany({
+        where: {
+          userId,
+          isEquipped: true,
+          decorationId: { not: decorationId },
+          decoration: { type: decorationType },
+        },
+        data: { isEquipped: false },
       });
+
+      if (!owned.isEquipped) {
+        await tx.userDecoration.update({
+          where: { id: owned.id },
+          data: { isEquipped: true },
+        });
+      }
     }
 
-    return toEquippedDTO(owned.decoration);
+    return {
+      ok: true,
+      equipped: toEquippedDTO(owned.decoration),
+      type: decorationType,
+    } as const;
   });
 }
 
+/**
+ * Lepas dekorasi.
+ * - Untuk frame/nametag: lepas yang sedang ter-equip dari type tersebut.
+ * - Untuk effect: kalau `decorationId` diberikan, lepas effect itu saja; kalau
+ *   tidak, lepas SEMUA effect ter-equip.
+ */
 export async function unequipDecoration(
   userId: number,
-  type?: DecorationType,
+  options: { type?: DecorationType; decorationId?: number } = {},
 ) {
+  const { type, decorationId } = options;
+
+  if (decorationId !== undefined) {
+    await prisma.userDecoration.updateMany({
+      where: { userId, decorationId, isEquipped: true },
+      data: { isEquipped: false },
+    });
+    return;
+  }
+
   await prisma.userDecoration.updateMany({
     where: {
       userId,
@@ -243,9 +352,36 @@ export async function unequipDecoration(
   });
 }
 
+export async function getEquippedDecorations(
+  userId: number,
+): Promise<EquippedDecorationsDTO> {
+  const equipped = await prisma.userDecoration.findMany({
+    where: { userId, isEquipped: true, decoration: { isActive: true } },
+    orderBy: [{ unlockedAt: "asc" }],
+    include: { decoration: { select: DECORATION_SELECT } },
+  });
+
+  const result = emptyEquipped();
+  for (const item of equipped) {
+    const type = normalizeType(item.decoration.type);
+    const dto = toEquippedDTO(item.decoration);
+    if (!dto) continue;
+    if (type === "effect") {
+      if (result.effects.length < MAX_EQUIPPED_EFFECTS) {
+        result.effects.push(dto);
+      }
+    } else if (type === "frame") {
+      result.frame = dto;
+    } else if (type === "nametag") {
+      result.nametag = dto;
+    }
+  }
+  return result;
+}
+
 export async function getEquippedDecoration(
   userId: number,
-  type: DecorationType,
+  type: Exclude<DecorationType, "effect">,
 ): Promise<EquippedDecorationDTO> {
   const equipped = await prisma.userDecoration.findFirst({
     where: { userId, isEquipped: true, decoration: { isActive: true, type } },
@@ -254,22 +390,6 @@ export async function getEquippedDecoration(
 
   if (!equipped) return null;
   return toEquippedDTO(equipped.decoration);
-}
-
-export async function getEquippedDecorations(
-  userId: number,
-): Promise<EquippedDecorationsDTO> {
-  const equipped = await prisma.userDecoration.findMany({
-    where: { userId, isEquipped: true, decoration: { isActive: true } },
-    include: { decoration: { select: DECORATION_SELECT } },
-  });
-
-  const result: EquippedDecorationsDTO = { frame: null, nametag: null };
-  for (const item of equipped) {
-    const type = normalizeType(item.decoration.type);
-    result[type] = toEquippedDTO(item.decoration);
-  }
-  return result;
 }
 
 export async function getEquippedFrame(
@@ -296,17 +416,28 @@ export async function getEquippedDecorationsForUsers(
       isEquipped: true,
       decoration: { isActive: true },
     },
+    orderBy: [{ unlockedAt: "asc" }],
     include: { decoration: { select: DECORATION_SELECT } },
   });
 
   for (const userId of userIds) {
-    result.set(userId, { frame: null, nametag: null });
+    result.set(userId, emptyEquipped());
   }
 
   for (const item of equipped) {
-    const current = result.get(item.userId) ?? { frame: null, nametag: null };
+    const current = result.get(item.userId) ?? emptyEquipped();
     const type = normalizeType(item.decoration.type);
-    current[type] = toEquippedDTO(item.decoration);
+    const dto = toEquippedDTO(item.decoration);
+    if (!dto) continue;
+    if (type === "effect") {
+      if (current.effects.length < MAX_EQUIPPED_EFFECTS) {
+        current.effects.push(dto);
+      }
+    } else if (type === "frame") {
+      current.frame = dto;
+    } else if (type === "nametag") {
+      current.nametag = dto;
+    }
     result.set(item.userId, current);
   }
   return result;
@@ -321,4 +452,94 @@ export async function getEquippedFramesForUsers(
     result.set(userId, equipped.frame);
   }
   return result;
+}
+
+export type PurchaseError =
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "not_purchasable" }
+  | { ok: false; reason: "already_owned" }
+  | { ok: false; reason: "insufficient_exp"; required: number; current: number }
+  | { ok: false; reason: "user_not_found" };
+
+export type PurchaseSuccess = {
+  ok: true;
+  result: PurchaseResultDTO;
+};
+
+export async function purchaseDecorationWithExp(
+  userId: number,
+  decorationId: number,
+): Promise<PurchaseSuccess | PurchaseError> {
+  return prisma.$transaction(async (tx) => {
+    const decoration = await tx.decoration.findUnique({
+      where: { id: decorationId },
+      select: DECORATION_SELECT,
+    });
+    if (!decoration || !decoration.isActive) {
+      return { ok: false, reason: "not_found" } as const;
+    }
+    if ((decoration.priceExp ?? 0) <= 0) {
+      return { ok: false, reason: "not_purchasable" } as const;
+    }
+
+    const existing = await tx.userDecoration.findUnique({
+      where: { userId_decorationId: { userId, decorationId } },
+      select: { id: true },
+    });
+    if (existing) {
+      return { ok: false, reason: "already_owned" } as const;
+    }
+
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { exp: true, level: true },
+    });
+    if (!user) {
+      return { ok: false, reason: "user_not_found" } as const;
+    }
+
+    const price = decoration.priceExp;
+    if (user.exp < price) {
+      return {
+        ok: false,
+        reason: "insufficient_exp",
+        required: price,
+        current: user.exp,
+      } as const;
+    }
+
+    const newExp = Math.max(0, user.exp - price);
+    const newLevel = calculateLevel(newExp);
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { exp: newExp, level: newLevel },
+    });
+
+    // ExpLog: simpan negative value sebagai jejak audit. refId unik per
+    // (user, type, refId) — sudah dijamin tidak bentrok via guard "already_owned"
+    // di atas, tapi tetap aman karena dekorasi cuma bisa dibeli sekali per user.
+    await tx.expLog.create({
+      data: {
+        userId,
+        type: "decoration_purchase",
+        value: -price,
+        refId: `decoration:${decorationId}`,
+      },
+    });
+
+    await tx.userDecoration.create({
+      data: { userId, decorationId, isEquipped: false },
+    });
+
+    return {
+      ok: true,
+      result: {
+        decoration: toEquippedDTO(decoration),
+        exp: newExp,
+        level: newLevel,
+        spentExp: price,
+      },
+    } as const;
+  });
 }
