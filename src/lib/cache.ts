@@ -11,6 +11,7 @@ export const CACHE_TTL = {
   ANIME_DETAIL: 600,
   EPISODE_DETAIL: 1200,
   PUBLIC_USER: 600,
+  PUBLIC_USER_ACTIVITY: 600,
   GENRES: 3600,
   TAGS: 3600,
   STUDIOS: 3600,
@@ -29,6 +30,12 @@ export const CACHE_KEYS = {
   episodeDetail: (animeSlug: string, episodeSlug: string) =>
     `anime:episode:${animeSlug}:${episodeSlug}`,
   publicUser: (userId: number) => `user:public:${userId}`,
+  publicUserHistory: (userId: number, page: number, limit: number) =>
+    `user:public:${userId}:history:${page}:${limit}`,
+  publicUserSaved: (userId: number, page: number, limit: number) =>
+    `user:public:${userId}:saved:${page}:${limit}`,
+  publicUserComments: (userId: number, page: number, limit: number) =>
+    `user:public:${userId}:comments:${page}:${limit}`,
   genres: () => "anime:meta:genres",
   tags: (limit: number) => `anime:meta:tags:${limit}`,
   studios: (limit: number) => `anime:meta:studios:${limit}`,
