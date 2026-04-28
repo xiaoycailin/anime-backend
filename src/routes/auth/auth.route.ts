@@ -330,6 +330,7 @@ async function findOrCreateGoogleUser(profile: GoogleProfile) {
         password: await hash(randomUUID(), 12),
         avatar: profile.picture,
         loginType: "google",
+        isVerified: true,
         googleId: profile.sub,
         preference: { create: {} },
       },
