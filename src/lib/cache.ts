@@ -238,7 +238,9 @@ export async function setCacheField<T>(
 
 export function buildQueryKey(params: Record<string, unknown>): string {
   const entries = Object.entries(params)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .filter(
+      ([, value]) => value !== undefined && value !== null && value !== "",
+    )
     .map(([key, value]) => {
       if (Array.isArray(value)) return [key, value.join(",")];
       return [key, String(value)];
@@ -264,7 +266,10 @@ export const CacheInvalidator = {
     await Promise.all(tasks);
   },
 
-  async onEpisodeChange(animeSlug?: string | null, episodeSlug?: string | null) {
+  async onEpisodeChange(
+    animeSlug?: string | null,
+    episodeSlug?: string | null,
+  ) {
     const tasks: Promise<unknown>[] = [
       deleteByPattern(CACHE_PATTERNS.allEpisodeLists),
       deleteByPattern(CACHE_PATTERNS.allAnimeLists),
@@ -290,5 +295,27 @@ export const CacheInvalidator = {
       deleteByPattern("anime:detail:*"),
       deleteByPattern("anime:episode:*"),
     ]);
+  },
+
+  async onPublicUserChange(userId?: number | null) {
+    if (!userId) return;
+    await Promise.all([
+      deleteCache(CACHE_KEYS.publicUser(userId)),
+      deleteByPattern(`user:public:${userId}:*`),
+    ]);
+  },
+
+  async onPublicUsersChange(userIds: Array<number | null | undefined>) {
+    const uniqueIds = Array.from(
+      new Set(
+        userIds.filter(
+          (userId): userId is number =>
+            typeof userId === "number" && Number.isFinite(userId) && userId > 0,
+        ),
+      ),
+    );
+    await Promise.all(
+      uniqueIds.map((userId) => this.onPublicUserChange(userId)),
+    );
   },
 };

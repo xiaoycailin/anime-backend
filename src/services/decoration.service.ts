@@ -11,7 +11,13 @@ export type DecorationType = (typeof DECORATION_TYPES)[number];
 export const MAX_EQUIPPED_EFFECTS = 3;
 
 export type NameTagConfig = {
-  style?: "aura" | "glitch" | "cosmic" | "glitch-glasses" | "blood-god" | "royal";
+  style?:
+    | "aura"
+    | "glitch"
+    | "cosmic"
+    | "glitch-glasses"
+    | "blood-god"
+    | "royal";
 };
 
 export type EffectConfig = {
@@ -112,10 +118,21 @@ function toConfig(config: Prisma.JsonValue | null): DecorationConfig {
   return {};
 }
 
-function toAssetUrl(decoration: { type: string; asset: string | null; config: Prisma.JsonValue | null }) {
+function isRemoteFrameAsset(asset: string | null | undefined) {
+  return Boolean(asset?.trim().toLowerCase().startsWith("https://"));
+}
+
+function toAssetUrl(decoration: {
+  type: string;
+  asset: string | null;
+  config: Prisma.JsonValue | null;
+}) {
   const type = normalizeType(decoration.type);
   if (type === "frame") {
-    return decoration.asset ? `${FRAME_BASE_PATH}/${decoration.asset}` : null;
+    const asset = decoration.asset?.trim();
+    if (!asset) return null;
+    if (isRemoteFrameAsset(asset) || asset.startsWith("/")) return asset;
+    return `${FRAME_BASE_PATH}/${asset}`;
   }
   if (type === "effect") {
     const cfg = toConfig(decoration.config) as EffectConfig;
@@ -196,7 +213,12 @@ export async function listDecorationsForUser(
 ): Promise<ShopDecorationDTO[]> {
   const decorations = await prisma.decoration.findMany({
     where: { isActive: true },
-    orderBy: [{ type: "asc" }, { sortOrder: "asc" }, { requiredLevel: "asc" }, { id: "asc" }],
+    orderBy: [
+      { type: "asc" },
+      { sortOrder: "asc" },
+      { requiredLevel: "asc" },
+      { id: "asc" },
+    ],
     select: DECORATION_SELECT,
   });
 

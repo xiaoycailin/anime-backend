@@ -2,21 +2,89 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-const DECORATIONS = [
-  { name: "Border 1", asset: "border1.png", requiredLevel: 20, sortOrder: 1 },
-  { name: "Border 2", asset: "border2.gif", requiredLevel: 30, sortOrder: 2 },
-  { name: "Border 3", asset: "border3.gif", requiredLevel: 50, sortOrder: 3 },
-  { name: "Border 4", asset: "border4.webp", requiredLevel: 55, sortOrder: 4 },
-  { name: "Border 6", asset: "border6.png", requiredLevel: 60, sortOrder: 5 },
-  { name: "Border 5", asset: "border5.gif", requiredLevel: 90, sortOrder: 6 },
-  { name: "Border 7", asset: "border7.png", requiredLevel: 100, sortOrder: 7 },
-  { name: "Border 8", asset: "border8.webp", requiredLevel: 55, sortOrder: 8 },
-  { name: "Border 9", asset: "border9.gif", requiredLevel: 50, sortOrder: 9 },
+type BorderConfig = {
+  scale: number;
+  offsetX?: number;
+  offsetY?: number;
+  commentOffsetY?: number;
+};
+
+const DECORATIONS: Array<{
+  name: string;
+  asset: string;
+  requiredLevel: number;
+  sortOrder: number;
+  config: BorderConfig;
+}> = [
+  {
+    name: "Border 1",
+    asset: "border1.png",
+    requiredLevel: 20,
+    sortOrder: 1,
+    config: { scale: 1.11, offsetY: 2 },
+  },
+  {
+    name: "Border 2",
+    asset: "border2.gif",
+    requiredLevel: 30,
+    sortOrder: 2,
+    config: { scale: 1.4 },
+  },
+  {
+    name: "Border 3",
+    asset: "border3.gif",
+    requiredLevel: 50,
+    sortOrder: 3,
+    config: { scale: 1.4 },
+  },
+  {
+    name: "Border 4",
+    asset: "border4.webp",
+    requiredLevel: 55,
+    sortOrder: 4,
+    config: { scale: 1.65, offsetY: -1 },
+  },
+  {
+    name: "Border 6",
+    asset: "border6.png",
+    requiredLevel: 60,
+    sortOrder: 5,
+    config: { scale: 1.3 },
+  },
+  {
+    name: "Border 5",
+    asset: "border5.gif",
+    requiredLevel: 90,
+    sortOrder: 6,
+    config: { scale: 1.52, offsetY: -12, commentOffsetY: -4 },
+  },
+  {
+    name: "Border 7",
+    asset: "border7.png",
+    requiredLevel: 100,
+    sortOrder: 7,
+    config: { scale: 1.95 },
+  },
+  {
+    name: "Border 8",
+    asset: "border8.webp",
+    requiredLevel: 55,
+    sortOrder: 8,
+    config: { scale: 1.6, offsetY: -4, commentOffsetY: 1 },
+  },
+  {
+    name: "Border 9",
+    asset: "border9.gif",
+    requiredLevel: 50,
+    sortOrder: 9,
+    config: { scale: 1.3, offsetY: -2 },
+  },
   {
     name: "Border 10",
     asset: "border10.gif",
     requiredLevel: 80,
     sortOrder: 10,
+    config: { scale: 1.25, offsetY: 0 },
   },
 ];
 
@@ -48,14 +116,14 @@ async function main() {
         requiredLevel: item.requiredLevel,
         sortOrder: item.sortOrder,
         type: "frame",
-        config: {},
+        config: item.config,
         isActive: true,
       },
       create: {
         name: item.name,
         type: "frame",
         asset: item.asset,
-        config: {},
+        config: item.config,
         requiredLevel: item.requiredLevel,
         sortOrder: item.sortOrder,
       },

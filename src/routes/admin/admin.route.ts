@@ -95,7 +95,9 @@ type DecorationBody = {
   sortOrder?: number;
 };
 
-function normalizeDecorationType(value: unknown): "frame" | "nametag" | "effect" {
+function normalizeDecorationType(
+  value: unknown,
+): "frame" | "nametag" | "effect" {
   if (value === "nametag") return "nametag";
   if (value === "effect") return "effect";
   return "frame";
@@ -128,7 +130,9 @@ function cleanDecorationData(body: DecorationBody) {
   return data;
 }
 
-function sanitizeEffectConfig(input: Record<string, unknown> | null | undefined) {
+function sanitizeEffectConfig(
+  input: Record<string, unknown> | null | undefined,
+) {
   const cfg = input ?? {};
   const src = typeof cfg.src === "string" ? cfg.src.trim() : "";
   const loop = Boolean(cfg.loop);
@@ -140,6 +144,22 @@ function sanitizeEffectConfig(input: Record<string, unknown> | null | undefined)
   const config: Record<string, unknown> = { src, loop };
   if (duration !== undefined) config.duration = duration;
   return { config, src, loop, duration };
+}
+
+async function adminDecorationWithCount(id: number) {
+  return prisma.decoration.findUnique({
+    where: { id },
+    include: { _count: { select: { ownedBy: true } } },
+  });
+}
+
+async function decorationOwnerUserIds(decorationId: number) {
+  if (!Number.isFinite(decorationId) || decorationId <= 0) return [];
+  const owners = await prisma.userDecoration.findMany({
+    where: { decorationId },
+    select: { userId: true },
+  });
+  return owners.map((owner) => owner.userId);
 }
 
 type BroadcastBody = {
@@ -291,10 +311,7 @@ function episodeWhere(query: PaginationQuery): Prisma.EpisodeWhereInput {
     ...(query.hasVideo === "false" ? { servers: { none: {} } } : {}),
     ...(query.hasSubtitle === "true"
       ? {
-          OR: [
-            { subtitleTracks: { some: {} } },
-            { subtitles: { some: {} } },
-          ],
+          OR: [{ subtitleTracks: { some: {} } }, { subtitles: { some: {} } }],
         }
       : {}),
     ...(query.hasSubtitle === "false"
@@ -1030,9 +1047,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       throw badRequest("Judul dan message wajib diisi");
     }
 
-    let result:
-      | { data?: unknown; recipientCount?: number }
-      | undefined;
+    let result: { data?: unknown; recipientCount?: number } | undefined;
 
     if (scope === "broadcast") {
       const notification = await createBroadcastNotification({
@@ -1084,7 +1099,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         createdById: request.user.id,
       });
     } else if (scope === "saved-anime") {
-      if (!body.animeId) throw badRequest("animeId wajib diisi untuk segment saved-anime");
+      if (!body.animeId)
+        throw badRequest("animeId wajib diisi untuk segment saved-anime");
       result = await createSegmentNotification({
         category,
         type,
@@ -1210,20 +1226,22 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       ...(body.role ? { role: body.role } : {}),
       ...(body.username ? { username: body.username } : {}),
       ...(body.avatar !== undefined ? { avatar: body.avatar } : {}),
-      ...(body.isVerified !== undefined ? { isVerified: Boolean(body.isVerified) } : {}),
+      ...(body.isVerified !== undefined
+        ? { isVerified: Boolean(body.isVerified) }
+        : {}),
     };
 
     if (body.exp !== undefined) {
       const exp = Math.floor(Number(body.exp));
       if (!Number.isFinite(exp) || exp < 0) throw badRequest("EXP tidak valid");
       data.exp = exp;
-      data.level =
-        body.level !== undefined ? data.level : calculateLevel(exp);
+      data.level = body.level !== undefined ? data.level : calculateLevel(exp);
     }
 
     if (body.level !== undefined) {
       const level = Math.floor(Number(body.level));
-      if (!Number.isFinite(level) || level < 1) throw badRequest("Level tidak valid");
+      if (!Number.isFinite(level) || level < 1)
+        throw badRequest("Level tidak valid");
       data.level = level;
     }
 
@@ -1394,7 +1412,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const { page, limit, skip } = pageParams(query);
     const where: Prisma.DecorationWhereInput = {
       ...(query.search ? { name: { contains: query.search } } : {}),
-      ...(query.type === "frame" || query.type === "nametag" || query.type === "effect"
+      ...(query.type === "frame" ||
+      query.type === "nametag" ||
+      query.type === "effect"
         ? { type: query.type }
         : {}),
       ...(query.status === "active"
@@ -1458,9 +1478,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       config: normalizedConfig,
     });
     try {
-      const decoration = await prisma.decoration.create({
+      const createdDecoration = await prisma.decoration.create({
         data: data as unknown as Prisma.DecorationUncheckedCreateInput,
       });
+      const decoration = await adminDecorationWithCount(createdDecoration.id);
+      if (!decoration) throw notFound("Decoration tidak ditemukan");
       return created(reply, { data: decoration });
     } catch (error) {
       if (
@@ -1476,6 +1498,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.put("/decorations/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const body = request.body as DecorationBody;
+    const ownerUserIds = await decorationOwnerUserIds(id);
 
     // Cek tipe existing untuk validasi config khusus effect.
     const existing = await prisma.decoration.findUnique({
@@ -1498,10 +1521,13 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      const decoration = await prisma.decoration.update({
+      const updatedDecoration = await prisma.decoration.update({
         where: { id },
         data: cleanDecorationData(payload),
       });
+      const decoration = await adminDecorationWithCount(updatedDecoration.id);
+      if (!decoration) throw notFound("Decoration tidak ditemukan");
+      await CacheInvalidator.onPublicUsersChange(ownerUserIds);
       return ok(reply, { data: decoration });
     } catch (error) {
       if (
@@ -1522,8 +1548,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   app.delete("/decorations/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
+    const ownerUserIds = await decorationOwnerUserIds(id);
     try {
       await prisma.decoration.delete({ where: { id } });
+      await CacheInvalidator.onPublicUsersChange(ownerUserIds);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1572,18 +1600,19 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   // ── GET /admin/notification-stats ─────────────────────────────────────────
   app.get("/notification-stats", async (_request, reply) => {
     const sevenDaysAgo = weekStart();
-    const [totalSent, totalRead, recentRecipients, reviewStats] = await Promise.all([
-      prisma.notificationRecipient.count(),
-      prisma.notificationRecipient.count({ where: { isRead: true } }),
-      prisma.notificationRecipient.findMany({
-        where: { createdAt: { gte: sevenDaysAgo } },
-        select: { createdAt: true, isRead: true },
-      }),
-      prisma.animeReview.aggregate({
-        _count: { id: true },
-        _avg:   { rating: true },
-      }),
-    ]);
+    const [totalSent, totalRead, recentRecipients, reviewStats] =
+      await Promise.all([
+        prisma.notificationRecipient.count(),
+        prisma.notificationRecipient.count({ where: { isRead: true } }),
+        prisma.notificationRecipient.findMany({
+          where: { createdAt: { gte: sevenDaysAgo } },
+          select: { createdAt: true, isRead: true },
+        }),
+        prisma.animeReview.aggregate({
+          _count: { id: true },
+          _avg: { rating: true },
+        }),
+      ]);
 
     const sentByDay = Array.from({ length: 7 }, (_, i) => {
       const date = new Date();
@@ -1592,17 +1621,22 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       const dayItems = recentRecipients.filter(
         (r) => r.createdAt.toISOString().slice(0, 10) === key,
       );
-      return { date: key, sent: dayItems.length, read: dayItems.filter((r) => r.isRead).length };
+      return {
+        date: key,
+        sent: dayItems.length,
+        read: dayItems.filter((r) => r.isRead).length,
+      };
     });
 
     return ok(reply, {
       data: {
         totalSent,
         totalRead,
-        readRate: totalSent > 0 ? Math.round((totalRead / totalSent) * 1000) / 10 : 0,
+        readRate:
+          totalSent > 0 ? Math.round((totalRead / totalSent) * 1000) / 10 : 0,
         sentByDay,
         totalReviews: reviewStats._count.id,
-        avgRating:    reviewStats._avg.rating
+        avgRating: reviewStats._avg.rating
           ? Math.round(reviewStats._avg.rating * 10) / 10
           : null,
       },
@@ -1613,10 +1647,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get<{
     Querystring: { page?: string; limit?: string; status?: string };
   }>("/comment-reports", async (request, reply) => {
-    const page   = Math.max(1, Number(request.query.page)  || 1);
-    const limit  = Math.min(Math.max(1, Number(request.query.limit) || 20), 100);
-    const skip   = (page - 1) * limit;
-    const status = request.query.status as "pending" | "resolved" | "dismissed" | undefined;
+    const page = Math.max(1, Number(request.query.page) || 1);
+    const limit = Math.min(Math.max(1, Number(request.query.limit) || 20), 100);
+    const skip = (page - 1) * limit;
+    const status = request.query.status as
+      | "pending"
+      | "resolved"
+      | "dismissed"
+      | undefined;
 
     const where = status ? { status } : {};
 
@@ -1628,11 +1666,13 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         skip,
         take: limit,
         include: {
-          reporter:   { select: { id: true, username: true, avatar: true } },
+          reporter: { select: { id: true, username: true, avatar: true } },
           resolvedBy: { select: { id: true, username: true } },
           comment: {
             select: {
-              id: true, content: true, deletedAt: true,
+              id: true,
+              content: true,
+              deletedAt: true,
               user: { select: { id: true, username: true } },
             },
           },
@@ -1645,7 +1685,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       by: ["status"],
       _count: { id: true },
     });
-    const counts = { pending: 0, resolved: 0, dismissed: 0 } as Record<string, number>;
+    const counts = { pending: 0, resolved: 0, dismissed: 0 } as Record<
+      string,
+      number
+    >;
     for (const row of statusCounts) counts[row.status] = row._count.id;
 
     return ok(reply, {
@@ -1665,11 +1708,16 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     const { status, deleteComment } = request.body ?? {};
     if (!status || !["resolved", "dismissed"].includes(status)) {
-      return reply.code(400).send({ error: "status harus resolved atau dismissed" });
+      return reply
+        .code(400)
+        .send({ error: "status harus resolved atau dismissed" });
     }
 
-    const report = await prisma.commentReport.findUnique({ where: { id: reportId } });
-    if (!report) return reply.code(404).send({ error: "Laporan tidak ditemukan" });
+    const report = await prisma.commentReport.findUnique({
+      where: { id: reportId },
+    });
+    if (!report)
+      return reply.code(404).send({ error: "Laporan tidak ditemukan" });
 
     const adminId = (request.user as { id: number }).id;
 
@@ -1677,7 +1725,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       where: { id: reportId },
       data: {
         status,
-        resolvedAt:   new Date(),
+        resolvedAt: new Date(),
         resolvedById: adminId,
       },
     });
@@ -1686,7 +1734,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     if (deleteComment && status === "resolved") {
       await prisma.comment.update({
         where: { id: report.commentId },
-        data:  { deletedAt: new Date(), content: null },
+        data: { deletedAt: new Date(), content: null },
       });
     }
 
