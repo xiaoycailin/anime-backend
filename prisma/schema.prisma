@@ -60,6 +60,8 @@ model User {
   username     String          @unique
   password     String
   avatar       String?
+  loginType    String          @default("email") @map("login_type") @db.VarChar(30)
+  googleId     String?         @unique @map("google_id") @db.VarChar(191)
   role         String          @default("user") @db.VarChar(20)
   isVerified   Boolean         @default(false) @map("is_verified")
   exp          Int             @default(0)
