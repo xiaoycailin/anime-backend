@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { created, ok } from "../../utils/response";
 import { badRequest } from "../../utils/http-error";
-import { deleteR2Object, listR2Objects, uploadBufferToR2 } from "../../utils/r2";
+import {
+  deleteR2Object,
+  listR2Objects,
+  uploadBufferToR2,
+} from "../../utils/r2";
 
 const ASSET_PREFIX = "content/assets/";
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -34,7 +38,11 @@ function assetFolder() {
 
 function validateAssetKey(key: string | undefined) {
   const cleanKey = key?.trim().replace(/^\/+/, "") ?? "";
-  if (!cleanKey || !cleanKey.startsWith(ASSET_PREFIX) || cleanKey.includes("..")) {
+  if (
+    !cleanKey ||
+    !cleanKey.startsWith(ASSET_PREFIX) ||
+    cleanKey.includes("..")
+  ) {
     throw badRequest("Key asset tidak valid");
   }
   return cleanKey;
