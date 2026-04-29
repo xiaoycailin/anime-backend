@@ -35,9 +35,9 @@ model Anime {
   fansub        String? @db.VarChar(100)
 
   // engagement stats
-  views                  Int      @default(0)
-  likes                  Int      @default(0)
-  trendingScore          Float    @default(0)
+  views                  Int       @default(0)
+  likes                  Int       @default(0)
+  trendingScore          Float     @default(0)
   trendingScoreUpdatedAt DateTime?
 
   // relasi
@@ -55,38 +55,38 @@ model Anime {
 }
 
 model User {
-  id           Int             @id @default(autoincrement())
-  email        String          @unique
-  username     String          @unique
-  password     String
-  avatar       String?
-  loginType    String          @default("email") @map("login_type") @db.VarChar(30)
-  googleId     String?         @unique @map("google_id") @db.VarChar(191)
-  role         String          @default("user") @db.VarChar(20)
-  isVerified   Boolean         @default(false) @map("is_verified")
-  exp          Int             @default(0)
-  level        Int             @default(1)
-  lastExpGainAt DateTime?      @map("last_exp_gain_at")
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  watchHistory WatchHistory[]
-  savedAnime   SavedAnime[]
-  preference   UserPreference?
-  comments     Comment[]
-  commentRateLimit CommentRateLimit?
-  commentReactions CommentReaction[]
-  animeLikes   AnimeLike[]
-  episodeReactions EpisodeReaction[]
-  notifications NotificationRecipient[]
-  pushSubscriptions PushSubscription[]
+  id                     Int                     @id @default(autoincrement())
+  email                  String                  @unique
+  username               String                  @unique
+  password               String
+  avatar                 String?
+  loginType              String                  @default("email") @map("login_type") @db.VarChar(30)
+  googleId               String?                 @unique @map("google_id") @db.VarChar(191)
+  role                   String                  @default("user") @db.VarChar(20)
+  isVerified             Boolean                 @default(false) @map("is_verified")
+  exp                    Int                     @default(0)
+  level                  Int                     @default(1)
+  lastExpGainAt          DateTime?               @map("last_exp_gain_at")
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  watchHistory           WatchHistory[]
+  savedAnime             SavedAnime[]
+  preference             UserPreference?
+  comments               Comment[]
+  commentRateLimit       CommentRateLimit?
+  commentReactions       CommentReaction[]
+  animeLikes             AnimeLike[]
+  episodeReactions       EpisodeReaction[]
+  notifications          NotificationRecipient[]
+  pushSubscriptions      PushSubscription[]
   notificationPreference NotificationPreference?
-  createdNotifications Notification[] @relation("NotificationCreatedBy")
-  animeReviews   AnimeReview[]
-  commentReports CommentReport[] @relation("CommentReportReporter")
-  resolvedReports CommentReport[] @relation("CommentReportResolver")
-  expLogs       ExpLog[]
-  decorations   UserDecoration[]
-  refreshTokens RefreshToken[]
+  createdNotifications   Notification[]          @relation("NotificationCreatedBy")
+  animeReviews           AnimeReview[]
+  commentReports         CommentReport[]         @relation("CommentReportReporter")
+  resolvedReports        CommentReport[]         @relation("CommentReportResolver")
+  expLogs                ExpLog[]
+  decorations            UserDecoration[]
+  refreshTokens          RefreshToken[]
 }
 
 model RefreshToken {
@@ -213,16 +213,16 @@ model SavedAnime {
 }
 
 model UserPreference {
-  id              Int     @id @default(autoincrement())
-  userId          Int     @unique
-  theme           String  @default("dark")
-  defaultQuality  String  @default("auto")
-  autoPlay        Boolean @default(false)
-  defaultVolume   Float   @default(1.0)
-  autoNextEpisode Boolean @default(true)
-  skipIntroEnabled Boolean @default(false)
-  subtitleEnabled  Boolean @default(true)
-  subtitleLang     String  @default("id")
+  id                 Int     @id @default(autoincrement())
+  userId             Int     @unique
+  theme              String  @default("dark")
+  defaultQuality     String  @default("auto")
+  autoPlay           Boolean @default(false)
+  defaultVolume      Float   @default(1.0)
+  autoNextEpisode    Boolean @default(true)
+  skipIntroEnabled   Boolean @default(false)
+  subtitleEnabled    Boolean @default(true)
+  subtitleLang       String  @default("id")
   subtitleFontSize   String  @default("1.5rem")
   subtitleFontFamily String  @default("inherit")
   subtitleColor      String  @default("#ffffff")
@@ -231,7 +231,7 @@ model UserPreference {
   subtitlePosition   String  @default("10%")
   subtitleOpacity    Float   @default(1.0)
   subtitleMaxWidth   String  @default("90%")
-  user            User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 enum NotificationCategory {
@@ -257,20 +257,20 @@ enum NotificationRecipientKind {
 }
 
 model Notification {
-  id          Int                  @id @default(autoincrement())
+  id          Int                     @id @default(autoincrement())
   scope       NotificationScope
   category    NotificationCategory
-  type        String               @db.VarChar(100)
-  title       String               @db.VarChar(255)
-  message     String               @db.Text
-  link        String?              @db.VarChar(255)
-  image       String?              @db.Text
+  type        String                  @db.VarChar(100)
+  title       String                  @db.VarChar(255)
+  message     String                  @db.Text
+  link        String?                 @db.VarChar(255)
+  image       String?                 @db.Text
   payload     Json?
-  topic       String?              @db.VarChar(100)
+  topic       String?                 @db.VarChar(100)
   createdById Int?
-  createdBy   User?                @relation("NotificationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy   User?                   @relation("NotificationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   recipients  NotificationRecipient[]
-  createdAt   DateTime             @default(now())
+  createdAt   DateTime                @default(now())
 
   @@index([scope, createdAt(sort: Desc)])
   @@index([category, createdAt(sort: Desc)])
@@ -298,18 +298,18 @@ model NotificationRecipient {
 }
 
 model NotificationPreference {
-  id               Int     @id @default(autoincrement())
-  userId           Int     @unique
-  announcement     Boolean @default(true)
-  contentNew       Boolean @default(true)
-  contentUpdate    Boolean @default(true)
-  personalActivity Boolean @default(true)
-  watchReminder    Boolean @default(true)
-  accountSystem    Boolean @default(true)
-  adminOperational Boolean @default(true)
-  pushEnabled      Boolean @default(true)
-  inAppEnabled     Boolean @default(true)
-  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               Int      @id @default(autoincrement())
+  userId           Int      @unique
+  announcement     Boolean  @default(true)
+  contentNew       Boolean  @default(true)
+  contentUpdate    Boolean  @default(true)
+  personalActivity Boolean  @default(true)
+  watchReminder    Boolean  @default(true)
+  accountSystem    Boolean  @default(true)
+  adminOperational Boolean  @default(true)
+  pushEnabled      Boolean  @default(true)
+  inAppEnabled     Boolean  @default(true)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -317,21 +317,21 @@ model NotificationPreference {
 }
 
 model PushSubscription {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   userId         Int?
-  deviceId       String   @db.VarChar(191)
-  endpoint       String   @db.Text
-  endpointHash   String   @unique @db.VarChar(64)
-  p256dh         String   @db.Text
-  auth           String   @db.Text
+  deviceId       String    @db.VarChar(191)
+  endpoint       String    @db.Text
+  endpointHash   String    @unique @db.VarChar(64)
+  p256dh         String    @db.Text
+  auth           String    @db.Text
   expirationTime DateTime?
-  userAgent      String?  @db.VarChar(255)
-  allowBroadcast Boolean  @default(true)
+  userAgent      String?   @db.VarChar(255)
+  allowBroadcast Boolean   @default(true)
   topics         Json?
-  isActive       Boolean  @default(true)
+  isActive       Boolean   @default(true)
   lastUsedAt     DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -354,7 +354,7 @@ model SiteConfig {
 }
 
 model Comment {
-  id        Int       @id @default(autoincrement())
+  id        Int  @id @default(autoincrement())
   userId    Int
   animeId   Int
   episodeId Int?
@@ -364,14 +364,14 @@ model Comment {
   editedAt  DateTime?
   deletedAt DateTime?
 
-  parentId  Int?
-  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
-  replies   Comment[] @relation("CommentReplies")
+  parentId Int?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies  Comment[] @relation("CommentReplies")
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   reactions CommentReaction[]
   reports   CommentReport[]
 
@@ -394,8 +394,8 @@ model CommentReaction {
 
   createdAt DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
 
   @@unique([userId, commentId])
   @@index([commentId])
@@ -471,27 +471,27 @@ model AnimeMetaExtra {
 // ─── EPISODE ──────────────────────────────────────────────────────────────────
 
 model Episode {
-  id      Int     @id @default(autoincrement())
-  animeId Int
-  slug    String  @unique @db.VarChar(255)
-  number  Int
-  title   String  @db.Text
-  thumbnail String? @db.Text
-  sub     String? @db.VarChar(20)
-  date    String? @db.VarChar(50)
-  status  String  @default("published") @db.VarChar(20)
-  views   Int     @default(0)
-  likes   Int     @default(0)
-  dislikes Int    @default(0)
+  id               Int      @id @default(autoincrement())
+  animeId          Int
+  slug             String   @unique @db.VarChar(255)
+  number           Int
+  title            String   @db.Text
+  thumbnail        String?  @db.Text
+  sub              String?  @db.VarChar(20)
+  date             String?  @db.VarChar(50)
+  status           String   @default("published") @db.VarChar(20)
+  views            Int      @default(0)
+  likes            Int      @default(0)
+  dislikes         Int      @default(0)
   skipIntroSeconds Float?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
 
-  anime   Anime    @relation(fields: [animeId], references: [id], onDelete: Cascade)
-  servers Server[]
-  subtitles Subtitle[]
+  anime          Anime             @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  servers        Server[]
+  subtitles      Subtitle[]
   subtitleTracks SubtitleTrack[]
-  reactions EpisodeReaction[]
+  reactions      EpisodeReaction[]
 
   // @@unique([animeId, number]) ← HAPUS INI
 
@@ -517,10 +517,10 @@ model EpisodeReaction {
 // ─── SERVER (streaming source per episode) ────────────────────────────────────
 
 model Server {
-  id        Int    @id @default(autoincrement())
+  id        Int     @id @default(autoincrement())
   episodeId Int
-  label     String @db.Text
-  value     String @db.Text // iframe src URL
+  label     String  @db.Text
+  value     String  @db.Text // iframe src URL
   isPrimary Boolean @default(false)
 
   episode Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
@@ -556,7 +556,7 @@ model SubtitleTrack {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  episode Episode        @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  episode Episode       @relation(fields: [episodeId], references: [id], onDelete: Cascade)
   cues    SubtitleCue[]
 
   @@unique([episodeId, serverUrl(length: 255), language])
@@ -628,9 +628,9 @@ model CommentReport {
   resolvedById Int?
   createdAt    DateTime     @default(now())
 
-  reporter   User    @relation("CommentReportReporter",  fields: [reporterId],   references: [id], onDelete: Cascade)
-  comment    Comment @relation(fields: [commentId],      references: [id],       onDelete: Cascade)
-  resolvedBy User?   @relation("CommentReportResolver",  fields: [resolvedById], references: [id], onDelete: SetNull)
+  reporter   User    @relation("CommentReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  comment    Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  resolvedBy User?   @relation("CommentReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
 
   @@unique([reporterId, commentId])
   @@index([status, createdAt(sort: Desc)])

@@ -45,6 +45,34 @@ async function ensureUserExists(userId: number) {
 }
 
 export const usersRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{ Querystring: { q?: string; limit?: string } }>(
+    "/search",
+    async (request, reply) => {
+      const q = (request.query.q ?? "").trim();
+      const limit = Math.min(toPositiveInt(request.query.limit, 8), 12);
+
+      if (q.length < 2) {
+        return ok(reply, { message: "Users search fetched", data: [] });
+      }
+
+      const users = await prisma.user.findMany({
+        where: {
+          username: { contains: q },
+        },
+        orderBy: [{ isVerified: "desc" }, { username: "asc" }],
+        take: limit,
+        select: {
+          id: true,
+          username: true,
+          avatar: true,
+          isVerified: true,
+        },
+      });
+
+      return ok(reply, { message: "Users search fetched", data: users });
+    },
+  );
+
   app.get<{ Params: { id: string } }>("/:id", async (request, reply) => {
     const userId = parseUserId(request.params.id);
 

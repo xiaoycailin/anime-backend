@@ -7,6 +7,7 @@ import { startTrendingRefreshJob } from "./services/trending.service";
 import { startReminderJob } from "./jobs/reminder.job";
 import { startEncodingWorker } from "./services/video-pipeline.service";
 import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
+import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
 import { closeRedis, redis } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
@@ -40,6 +41,10 @@ async function start() {
     startReminderJob();
     startEncodingWorker();
     startUploadCleanupJob({
+      info: (msg) => app.log.info(msg),
+      error: (msg, err) => app.log.error({ err }, msg),
+    });
+    startChatCleanupJob({
       info: (msg) => app.log.info(msg),
       error: (msg, err) => app.log.error({ err }, msg),
     });

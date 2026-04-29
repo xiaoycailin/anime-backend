@@ -6,6 +6,7 @@ import { syncAssetsRoutes } from "./routes/sync-assets/sync-assets.route";
 import { authPlugin } from "./plugins/auth";
 import { adminGuardPlugin } from "./plugins/adminGuard";
 import { registerErrorHandlers } from "./plugins/error-handler";
+import { registerChatWebSocket } from "./services/chat-ws.service";
 import { sendResponse } from "./utils/response";
 import fs from "fs";
 import path from "path";
@@ -72,6 +73,7 @@ export function buildApp() {
 
   app.register(syncAssetsRoutes, { prefix: "/sync-assets" });
   app.register(apiRoutes, { prefix: "/api" });
+  registerChatWebSocket(app);
   registerErrorHandlers(app);
 
   app.ready(() => {
