@@ -12,10 +12,17 @@ import {
 import {
   editChatMessage,
   getChatRoomForAccess,
+  loadChatMessages,
   softDeleteChatMessage,
+  storeWeebinAiMessage,
   storeChatMessage,
+  updateWeebinAiMessage,
+  WEEBIN_AI_USERNAME,
 } from "./chat.service";
-import type { ChatMessagePayload, ChatSocketUser } from "./chat.types";
+import { runWeebinAiChatbot } from "./openai-services/chatbot/core";
+import { hasWeebinAiMention } from "./openai-services/chatbot/skills";
+import type { ChatbotStatus } from "./openai-services/chatbot/types";
+import type { ChatContextPayload, ChatMessagePayload, ChatSocketUser } from "./chat.types";
 
 type ChatClientEvent =
   | { event: "chat:join"; roomId?: string }
@@ -54,6 +61,26 @@ type ChatServerEvent =
       userId: string;
       username: string;
       typing: boolean;
+      status?: string | null;
+    }
+  | {
+      event: "chat:ai:status";
+      roomId: string;
+      messageId: string;
+      status: string;
+    }
+  | {
+      event: "chat:ai:delta";
+      roomId: string;
+      messageId: string;
+      delta: string;
+      text: string;
+    }
+  | {
+      event: "chat:ai:cards";
+      roomId: string;
+      messageId: string;
+      cards: ChatContextPayload[];
     }
   | { event: "chat:user:online"; userId: string }
   | { event: "chat:user:offline"; userId: string }
@@ -137,6 +164,168 @@ export async function publishChatMessageUpdate(
     roomId,
     message,
   });
+}
+
+async function publishWeebinAiTyping(
+  roomId: string,
+  messageId: string,
+  typing: boolean,
+  status?: ChatbotStatus,
+) {
+  await publishRoomEvent(roomId, {
+    event: "chat:typing:update",
+    roomId,
+    userId: "21",
+    username: "WeebinAI",
+    typing,
+    status: status ?? null,
+  });
+
+  if (typing && status) {
+    await publishRoomEvent(roomId, {
+      event: "chat:ai:status",
+      roomId,
+      messageId,
+      status,
+    });
+  }
+}
+
+async function updateAndPublishWeebinAiMessage(input: {
+  roomId: string;
+  messageId: string;
+  content: string;
+  contexts?: ChatContextPayload[];
+}) {
+  const message = await updateWeebinAiMessage(input);
+  if (!message) return null;
+  await publishRoomEvent(input.roomId, {
+    event: "chat:message:update",
+    roomId: input.roomId,
+    message,
+  });
+  return message;
+}
+
+async function getRecentWeebinAiContextMessages(
+  roomId: string,
+  userMessage: ChatMessagePayload,
+) {
+  const response = await loadChatMessages({ roomId, limit: 14 });
+  return response.messages
+    .filter((message) => message.id !== userMessage.id && !message.deletedAt)
+    .filter((message) => typeof message.content === "string" && message.content.trim())
+    .slice(-8)
+    .map((message) => ({
+      role:
+        message.senderUsername?.toLowerCase() === WEEBIN_AI_USERNAME
+          ? ("assistant" as const)
+          : ("user" as const),
+      content: message.content,
+    }));
+}
+
+async function answerWeebinAiMention(
+  roomId: string,
+  userMessage: ChatMessagePayload,
+) {
+  let botMessage: ChatMessagePayload | null = null;
+  let fullText = "";
+  let cards: ChatContextPayload[] = [];
+
+  try {
+    const recentMessages = await getRecentWeebinAiContextMessages(
+      roomId,
+      userMessage,
+    );
+
+    botMessage = await storeWeebinAiMessage({
+      roomId,
+      content: "",
+      replyToId: userMessage.id,
+    });
+
+    await publishRoomEvent(roomId, {
+      event: "chat:message:new",
+      roomId,
+      message: botMessage,
+    });
+
+    await publishWeebinAiTyping(
+      roomId,
+      botMessage.id,
+      true,
+      "WeebinAI sedang berfikir...",
+    );
+
+    const result = await runWeebinAiChatbot(
+      {
+        content: userMessage.content,
+        mentionedBot: true,
+        messages: recentMessages,
+      },
+      {
+        onStatus: async (status) => {
+          if (!botMessage) return;
+          await publishWeebinAiTyping(roomId, botMessage.id, true, status);
+        },
+        onDelta: async (delta, text) => {
+          if (!botMessage) return;
+          fullText = text;
+          await publishRoomEvent(roomId, {
+            event: "chat:ai:delta",
+            roomId,
+            messageId: botMessage.id,
+            delta,
+            text,
+          });
+          await updateAndPublishWeebinAiMessage({
+            roomId,
+            messageId: botMessage.id,
+            content: fullText,
+            contexts: cards,
+          });
+        },
+        onCards: async (nextCards) => {
+          if (!botMessage) return;
+          cards = nextCards;
+          await publishRoomEvent(roomId, {
+            event: "chat:ai:cards",
+            roomId,
+            messageId: botMessage.id,
+            cards,
+          });
+          await updateAndPublishWeebinAiMessage({
+            roomId,
+            messageId: botMessage.id,
+            content: fullText,
+            contexts: cards,
+          });
+        },
+      },
+    );
+
+    fullText = result.text;
+    cards = result.cards;
+    await updateAndPublishWeebinAiMessage({
+      roomId,
+      messageId: botMessage.id,
+      content: fullText,
+      contexts: cards,
+    });
+    await publishWeebinAiTyping(roomId, botMessage.id, false);
+  } catch {
+    if (botMessage) {
+      await updateAndPublishWeebinAiMessage({
+        roomId,
+        messageId: botMessage.id,
+        content:
+          "Maaf Animers, WeebinAI lagi belum bisa jawab sekarang. Coba lagi sebentar ya.",
+        contexts: cards,
+      });
+      await publishWeebinAiTyping(roomId, botMessage.id, false);
+    }
+  }
 }
 
 function joinRoom(client: ChatSocketClient, roomId: string) {
@@ -304,6 +493,13 @@ async function handleClientEvent(client: ChatSocketClient, input: string) {
         roomId: targetRoomId,
         message: result.message,
       });
+
+      if (
+        result.message.senderUsername !== WEEBIN_AI_USERNAME &&
+        hasWeebinAiMention(result.message.content)
+      ) {
+        void answerWeebinAiMention(targetRoomId, result.message);
+      }
       return;
     }
 
@@ -370,6 +566,7 @@ async function handleClientEvent(client: ChatSocketClient, input: string) {
         userId: String(client.user.id),
         username: client.user.username,
         typing,
+        status: null,
       });
       return;
     }

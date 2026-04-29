@@ -7,6 +7,7 @@ export type ExpType =
   | "watch_30s"
   | "watch_80_bonus"
   | "comment"
+  | "chat_message"
   | "episode_like"
   | "comment_like"
   | "decoration_purchase";
@@ -24,6 +25,7 @@ type AddExpResult = {
 const COOLDOWNS_MS: Partial<Record<ExpType, number>> = {
   open_app: 60 * 60 * 1000,
   comment: 20 * 60 * 1000,
+  chat_message: 15 * 60 * 1000,
 };
 
 const MAX_WATCH_DURATION_SEC = 6 * 60 * 60;

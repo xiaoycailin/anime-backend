@@ -14,12 +14,19 @@ import {
 } from "./chat-settings.service";
 import { hydrateChatContexts } from "./chat-context.service";
 import { sanitizeChatContent as sanitizeChatUrls } from "./chat-url.service";
-import { getChatUserSnapshot } from "./chat-user-cache.service";
+import {
+  getChatUserSnapshot,
+  invalidateChatUserSnapshot,
+} from "./chat-user-cache.service";
+import { addExp } from "./exp.service";
 import type {
+  ChatContextPayload,
   ChatMessagePayload,
   ChatReplyPreview,
   ChatSocketUser,
 } from "./chat.types";
+
+export const WEEBIN_AI_USERNAME = "weebinai";
 
 function roomMessagesKey(roomId: string) {
   return `chat:room:${roomId}:messages`;
@@ -221,6 +228,15 @@ async function findStoredMessage(roomId: string, messageId: string) {
   }
 
   return null;
+}
+
+async function getWeebinAiSnapshot() {
+  const user = await prisma.user.findUnique({
+    where: { username: WEEBIN_AI_USERNAME },
+    select: { id: true },
+  });
+  if (!user) throw new Error("WEEBIN_AI_USER_NOT_FOUND");
+  return getChatUserSnapshot(user.id);
 }
 
 async function replaceStoredMessage(input: {
@@ -596,7 +612,150 @@ export async function storeChatMessage(input: {
     .expire(key, CHAT_ROOM_SAFETY_TTL_SECONDS)
     .exec();
 
+  if (message.type !== "system") {
+    try {
+      const exp = await addExp(input.user.id, "chat_message", 50);
+      if (exp.granted) {
+        await invalidateChatUserSnapshot(input.user.id).catch(() => null);
+        if (exp.level !== undefined) {
+          const updatedMessage: ChatMessagePayload = {
+            ...message,
+            sender: {
+              ...message.sender,
+              level: exp.level,
+            },
+            senderLevel: exp.level,
+          };
+          return { ok: true as const, message: updatedMessage };
+        }
+      }
+    } catch {
+      // EXP should never block chat delivery.
+    }
+  }
+
   return { ok: true as const, message };
+}
+
+export async function storeWeebinAiMessage(input: {
+  roomId?: string;
+  content?: unknown;
+  contexts?: ChatContextPayload[];
+  replyToId?: unknown;
+}) {
+  const roomId = input.roomId ?? CHAT_GLOBAL_ROOM_ID;
+  await getChatRoomForAccess(roomId);
+
+  const bot = await getWeebinAiSnapshot();
+  const content =
+    typeof input.content === "string"
+      ? input.content.replace(/\s+/g, " ").trim().slice(0, 1200)
+      : "";
+  const contexts = (input.contexts ?? []).slice(0, 5);
+  const replyTo = await findReplyPreview(roomId, input.replyToId);
+  const createdAt = Date.now();
+  const message: ChatMessagePayload = {
+    id: randomUUID(),
+    roomId,
+    senderId: String(bot.id),
+    sender: {
+      id: String(bot.id),
+      name: bot.name,
+      username: bot.username,
+      fullName: bot.fullName,
+      avatar: bot.avatar,
+      isVerified: Boolean(bot.isVerified),
+      verifiedAt: bot.verifiedAt,
+      level: bot.level,
+      nageTag: bot.nageTag,
+      frame: bot.frame,
+      role: bot.role ?? null,
+    },
+    senderName: bot.name,
+    senderUsername: bot.username,
+    senderFullName: bot.fullName,
+    senderLevel: bot.level,
+    senderAvatar: bot.avatar,
+    senderNageTag: bot.nageTag,
+    senderFrame: bot.frame,
+    content,
+    context: contexts[0] ?? null,
+    contexts,
+    links: [],
+    replyTo,
+    type: "text",
+    editedAt: null,
+    deletedAt: null,
+    deletedBy: null,
+    deletedByRole: null,
+    createdAt,
+    expiresAt: createdAt + CHAT_MESSAGE_TTL_SECONDS * 1000,
+  };
+
+  const key = roomMessagesKey(roomId);
+  await redis
+    .multi()
+    .zadd(key, createdAt, JSON.stringify(message))
+    .expire(key, CHAT_ROOM_SAFETY_TTL_SECONDS)
+    .exec();
+
+  return message;
+}
+
+export async function updateWeebinAiMessage(input: {
+  roomId?: string;
+  messageId: string;
+  content?: string;
+  contexts?: ChatContextPayload[];
+}) {
+  const roomId = input.roomId ?? CHAT_GLOBAL_ROOM_ID;
+  const bot = await getWeebinAiSnapshot();
+  const stored = await findStoredMessage(roomId, input.messageId);
+  if (!stored || stored.message.senderId !== String(bot.id)) return null;
+
+  const content =
+    typeof input.content === "string"
+      ? input.content.replace(/\s+/g, " ").trim().slice(0, 1200)
+      : stored.message.content;
+  const contexts = input.contexts
+    ? input.contexts.slice(0, 5)
+    : stored.message.contexts;
+  const message: ChatMessagePayload = {
+    ...stored.message,
+    sender: {
+      ...stored.message.sender,
+      id: String(bot.id),
+      name: bot.name,
+      username: bot.username,
+      fullName: bot.fullName,
+      avatar: bot.avatar,
+      isVerified: Boolean(bot.isVerified),
+      verifiedAt: bot.verifiedAt,
+      level: bot.level,
+      nageTag: bot.nageTag,
+      frame: bot.frame,
+      role: bot.role ?? null,
+    },
+    senderName: bot.name,
+    senderUsername: bot.username,
+    senderFullName: bot.fullName,
+    senderLevel: bot.level,
+    senderAvatar: bot.avatar,
+    senderNageTag: bot.nageTag,
+    senderFrame: bot.frame,
+    content,
+    context: contexts[0] ?? null,
+    contexts,
+  };
+
+  await replaceStoredMessage({
+    key: stored.key,
+    raw: stored.raw,
+    score: stored.score,
+    message,
+  });
+
+  return message;
 }
 
 export async function cleanupAllChatRooms() {
