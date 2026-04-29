@@ -8,6 +8,7 @@ import { compare, hash } from "bcryptjs";
 import { OAuth2Client } from "google-auth-library";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
+import { CacheInvalidator } from "../../lib/cache";
 import { refreshCookieOptions, signAccessToken } from "../../plugins/auth";
 import {
   RefreshTokenError,
@@ -26,6 +27,7 @@ import {
   type EquippedDecorationDTO,
   type EquippedEffectDTO,
 } from "../../services/decoration.service";
+import { invalidateChatUserSnapshot } from "../../services/chat-user-cache.service";
 import {
   emptyProfileStats,
   getProfileStats,
@@ -42,6 +44,7 @@ type AuthBody = {
 
 type ProfileBody = {
   username?: string;
+  fullName?: string;
   avatar?: string | null;
 };
 
@@ -75,6 +78,7 @@ type LoginSessionUser = {
   id: number;
   email: string;
   username: string;
+  fullName?: string | null;
   avatar: string | null;
   role: string;
   isVerified?: boolean;
@@ -91,6 +95,7 @@ function publicUser(
     id: number;
     email: string;
     username: string;
+    fullName?: string | null;
     avatar: string | null;
     role?: string;
     isVerified?: boolean;
@@ -112,6 +117,7 @@ function publicUser(
     id: user.id,
     email: user.email,
     username: user.username,
+    fullName: user.fullName?.trim() || user.username,
     avatar: user.avatar,
     ...(user.role ? { role: user.role } : {}),
     isVerified: Boolean(user.isVerified),
@@ -130,6 +136,24 @@ function publicUser(
 
 function normalizeEmail(email?: string) {
   return (email ?? "").trim().toLowerCase();
+}
+
+function normalizeUsername(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/@.*/, "")
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return normalized || `user-${randomUUID().slice(0, 8)}`;
+}
+
+function normalizeFullName(value?: string) {
+  const fullName = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!fullName) throw badRequest("Nama wajib diisi");
+  if (fullName.length > 100) throw badRequest("Nama maksimal 100 karakter");
+  return fullName;
 }
 
 function requirePassword(password?: string) {
@@ -221,10 +245,7 @@ async function verifyGoogleProfile(idToken: string, clientId: string) {
 }
 
 function normalizeUsernameBase(name: string, email: string) {
-  const base = (name || email.split("@")[0] || "google-user")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+  const base = normalizeUsername(name || email.split("@")[0] || "google-user")
     .slice(0, 32);
 
   return base || "google-user";
@@ -327,6 +348,7 @@ async function findOrCreateGoogleUser(profile: GoogleProfile) {
       data: {
         email: profile.email,
         username: await uniqueUsername(profile.name, profile.email),
+        fullName: normalizeFullName(profile.name),
         password: await hash(randomUUID(), 12),
         avatar: profile.picture,
         loginType: "google",
@@ -350,11 +372,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/register", async (request, reply) => {
     const body = request.body as AuthBody;
     const email = normalizeEmail(body.email);
-    const username = (body.username ?? "").trim();
+    const username = await uniqueUsername(email.split("@")[0] ?? email, email);
+    const fullName = normalizeFullName(body.username ?? email.split("@")[0]);
     const password = requirePassword(body.password);
 
-    if (!email || !username) {
-      throw badRequest("Email dan username wajib diisi");
+    if (!email) {
+      throw badRequest("Email wajib diisi");
     }
 
     const exists = await prisma.user.findFirst({
@@ -370,6 +393,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       data: {
         email,
         username,
+        fullName,
         password: await hash(password, 12),
         preference: { create: {} },
       },
@@ -377,6 +401,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         id: true,
         email: true,
         username: true,
+        fullName: true,
         avatar: true,
         role: true,
         isVerified: true,
@@ -488,6 +513,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         id: true,
         email: true,
         username: true,
+        fullName: true,
         avatar: true,
         role: true,
         isVerified: true,
@@ -514,10 +540,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.put("/me", { preHandler: app.authenticate }, async (request, reply) => {
     const body = request.body as ProfileBody;
-    const data: ProfileBody = {};
+    const data: { fullName?: string; avatar?: string | null } = {};
 
     if (typeof body.username === "string" && body.username.trim()) {
-      data.username = body.username.trim();
+      data.fullName = normalizeFullName(body.username);
+    }
+
+    if (typeof body.fullName === "string" && body.fullName.trim()) {
+      data.fullName = normalizeFullName(body.fullName);
     }
 
     if (typeof body.avatar === "string" || body.avatar === null) {
@@ -532,6 +562,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           id: true,
           email: true,
           username: true,
+          fullName: true,
           avatar: true,
           role: true,
           isVerified: true,
@@ -542,6 +573,10 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      await Promise.all([
+        CacheInvalidator.onPublicUserChange(user.id),
+        invalidateChatUserSnapshot(user.id),
+      ]);
       const [equipped, profileStats] = await Promise.all([
         getEquippedDecorations(user.id),
         getProfileStats(user.id),

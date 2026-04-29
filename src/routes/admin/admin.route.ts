@@ -434,12 +434,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       prisma.comment.findMany({
         orderBy: { createdAt: "desc" },
         take: 5,
-        include: { user: { select: { username: true } } },
+        include: { user: { select: { username: true, fullName: true } } },
       }),
       prisma.user.findMany({
         orderBy: { createdAt: "desc" },
         take: 5,
-        select: { username: true, email: true, createdAt: true },
+        select: { username: true, fullName: true, email: true, createdAt: true },
       }),
       prisma.watchHistory.findMany({
         where: { watchedAt: { gte: sevenDaysAgo } },
@@ -498,6 +498,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         recentComments: recentComments.map((comment) => ({
           content: comment.deletedAt ? "[Komentar dihapus]" : comment.content,
           username: comment.user.username,
+          fullName: comment.user.fullName?.trim() || comment.user.username,
           animeTitle: animeMap.get(comment.animeId)?.title ?? "Unknown",
           createdAt: comment.createdAt,
         })),
@@ -1153,6 +1154,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         ? {
             OR: [
               { username: { contains: query.search } },
+              { fullName: { contains: query.search } },
               { email: { contains: query.search } },
             ],
           }
@@ -1169,6 +1171,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           id: true,
           email: true,
           username: true,
+          fullName: true,
           avatar: true,
           role: true,
           isVerified: true,
@@ -1193,6 +1196,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           id: true,
           email: true,
           username: true,
+          fullName: true,
           avatar: true,
           role: true,
           isVerified: true,
@@ -1250,9 +1254,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       data,
       select: {
         id: true,
-        email: true,
-        username: true,
-        avatar: true,
+          email: true,
+          username: true,
+          fullName: true,
+          avatar: true,
         role: true,
         isVerified: true,
         exp: true,
@@ -1291,7 +1296,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         take: limit,
         orderBy: { createdAt: "desc" },
         include: {
-          user: { select: { id: true, username: true, avatar: true } },
+          user: { select: { id: true, username: true, fullName: true, avatar: true } },
         },
       }),
       prisma.comment.count({ where }),
@@ -1666,14 +1671,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         skip,
         take: limit,
         include: {
-          reporter: { select: { id: true, username: true, avatar: true } },
-          resolvedBy: { select: { id: true, username: true } },
+          reporter: { select: { id: true, username: true, fullName: true, avatar: true } },
+          resolvedBy: { select: { id: true, username: true, fullName: true } },
           comment: {
             select: {
               id: true,
               content: true,
               deletedAt: true,
-              user: { select: { id: true, username: true } },
+              user: { select: { id: true, username: true, fullName: true } },
             },
           },
         },

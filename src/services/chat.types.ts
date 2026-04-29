@@ -3,9 +3,12 @@ import type { EquippedDecorationDTO } from "./decoration.service";
 export type ChatUserSnapshot = {
   id: number;
   name: string;
+  username: string;
+  fullName: string | null;
   avatar: string | null;
   isVerified: boolean;
   verifiedAt: string | null;
+  level: number;
   nageTag: EquippedDecorationDTO;
   frame: EquippedDecorationDTO;
   role: string;
@@ -37,6 +40,8 @@ export type ChatReplyPreview = {
   id: string;
   senderId: string;
   senderName: string;
+  senderUsername?: string;
+  senderFullName?: string | null;
   content: string;
   deletedAt: number | null;
 };
@@ -48,14 +53,20 @@ export type ChatMessagePayload = {
   sender: {
     id: string;
     name: string;
+    username?: string;
+    fullName?: string | null;
     avatar: string | null;
     isVerified: boolean;
     verifiedAt: string | null;
+    level?: number;
     nageTag: EquippedDecorationDTO;
     frame: EquippedDecorationDTO;
     role: string | null;
   };
   senderName: string;
+  senderUsername?: string;
+  senderFullName?: string | null;
+  senderLevel?: number;
   senderAvatar: string | null;
   senderNageTag: EquippedDecorationDTO;
   senderFrame: EquippedDecorationDTO;
@@ -95,5 +106,6 @@ export type ChatSocketUser = {
   id: number;
   email?: string;
   username: string;
+  fullName?: string | null;
   role: string;
 };

@@ -15,7 +15,10 @@ export async function getChatUserSnapshot(
   if (cached) {
     try {
       const snapshot = JSON.parse(cached) as Partial<ChatUserSnapshot>;
-      if (typeof snapshot.isVerified === "boolean") {
+      if (
+        typeof snapshot.isVerified === "boolean" &&
+        typeof snapshot.level === "number"
+      ) {
         return snapshot as ChatUserSnapshot;
       }
       await redis.del(userCacheKey(userId));
@@ -29,6 +32,7 @@ export async function getChatUserSnapshot(
     select: {
       id: true,
       username: true,
+      fullName: true,
       avatar: true,
       role: true,
       isVerified: true,
@@ -43,10 +47,13 @@ export async function getChatUserSnapshot(
   const decorations = await getEquippedDecorations(user.id);
   const snapshot: ChatUserSnapshot = {
     id: user.id,
-    name: user.username,
+    name: user.fullName?.trim() || user.username,
+    username: user.username,
+    fullName: user.fullName,
     avatar: user.avatar,
     isVerified: Boolean(user.isVerified),
     verifiedAt: null,
+    level: Math.max(1, Number(user.level ?? 1)),
     nageTag: decorations.nametag,
     frame: decorations.frame,
     role: user.role,

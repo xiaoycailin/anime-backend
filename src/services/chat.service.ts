@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { prisma } from "../lib/prisma";
 import { redis } from "../lib/redis";
 import { badRequest } from "../utils/http-error";
 import {
@@ -121,6 +122,88 @@ function toPublicMessage(message: ChatMessagePayload): ChatMessagePayload {
   };
 }
 
+function messageSenderId(message: ChatMessagePayload) {
+  const senderId = Number(message.senderId);
+  return Number.isInteger(senderId) && senderId > 0 ? senderId : null;
+}
+
+function applyFreshSenderProfile(
+  message: ChatMessagePayload,
+  user: {
+    id: number;
+    username: string;
+    fullName: string | null;
+    avatar: string | null;
+    role: string;
+    isVerified: boolean;
+    level: number;
+  },
+): ChatMessagePayload {
+  const level = Math.max(1, Number(user.level ?? message.senderLevel ?? 1));
+  const displayName = user.fullName?.trim() || user.username;
+  const sender = message.sender ?? {
+    id: String(user.id),
+    name: displayName,
+    avatar: user.avatar,
+    isVerified: Boolean(user.isVerified),
+    verifiedAt: null,
+    nageTag: message.senderNageTag,
+    frame: message.senderFrame,
+    role: user.role,
+  };
+
+  return {
+    ...message,
+    sender: {
+      ...sender,
+      id: String(user.id),
+      name: displayName,
+      username: user.username,
+      fullName: user.fullName,
+      avatar: user.avatar ?? sender.avatar,
+      isVerified: Boolean(user.isVerified),
+      level,
+      role: user.role ?? sender.role ?? null,
+    },
+    senderName: displayName,
+    senderUsername: user.username,
+    senderFullName: user.fullName,
+    senderLevel: level,
+    senderAvatar: user.avatar ?? message.senderAvatar,
+  };
+}
+
+async function hydrateMessageUserProfiles(messages: ChatMessagePayload[]) {
+  const userIds = Array.from(
+    new Set(
+      messages
+        .map(messageSenderId)
+        .filter((id): id is number => typeof id === "number"),
+    ),
+  );
+  if (userIds.length === 0) return messages;
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: {
+      id: true,
+      username: true,
+      fullName: true,
+      avatar: true,
+      role: true,
+      isVerified: true,
+      level: true,
+    },
+  });
+  const userById = new Map(users.map((user) => [user.id, user]));
+
+  return messages.map((message) => {
+    const senderId = messageSenderId(message);
+    const user = senderId ? userById.get(senderId) : null;
+    return user ? applyFreshSenderProfile(message, user) : message;
+  });
+}
+
 async function findStoredMessage(roomId: string, messageId: string) {
   const key = roomMessagesKey(roomId);
   const rows = await redis.zrange(key, 0, -1);
@@ -175,6 +258,8 @@ async function findReplyPreview(
       id: message.id,
       senderId: message.senderId,
       senderName: message.senderName,
+      senderUsername: message.senderUsername ?? message.sender?.username,
+      senderFullName: message.senderFullName ?? message.sender?.fullName ?? null,
       content: message.deletedAt ? "" : message.content.slice(0, 180),
       deletedAt: message.deletedAt,
     };
@@ -223,16 +308,17 @@ export async function loadChatMessages(input: {
     rows.reverse();
   }
 
-  const messages = rows
+  const messages = await hydrateMessageUserProfiles(rows
     .map(parseMessage)
     .filter((message): message is ChatMessagePayload => Boolean(message))
-    .filter((message) => message.expiresAt > now)
+    .filter((message) => message.expiresAt > now));
+  const publicMessages = messages
     .map(toPublicMessage);
 
   return {
     roomId,
-    messages,
-    nextCursor: messages[0]?.createdAt ? String(messages[0].createdAt) : null,
+    messages: publicMessages,
+    nextCursor: publicMessages[0]?.createdAt ? String(publicMessages[0].createdAt) : null,
     serverTime: now,
     slowmode: await getSlowmodeStatus({
       roomId,
@@ -292,10 +378,10 @@ export async function listAdminChatMessages(input: {
     minScore,
   );
 
-  const allMessages = rows
+  const allMessages = await hydrateMessageUserProfiles(rows
     .map(parseMessage)
     .filter((message): message is ChatMessagePayload => Boolean(message))
-    .filter((message) => message.expiresAt > now);
+    .filter((message) => message.expiresAt > now));
 
   const filtered = query
     ? allMessages.filter((message) => messageSearchText(message).includes(query))
@@ -349,7 +435,8 @@ export async function softDeleteChatMessage(input: {
   }
 
   if (stored.message.deletedAt) {
-    return { ok: true as const, message: toPublicMessage(stored.message) };
+    const [message] = await hydrateMessageUserProfiles([stored.message]);
+    return { ok: true as const, message: toPublicMessage(message) };
   }
 
   const message: ChatMessagePayload = {
@@ -365,7 +452,8 @@ export async function softDeleteChatMessage(input: {
     message,
   });
 
-  return { ok: true as const, message: toPublicMessage(message) };
+  const [hydrated] = await hydrateMessageUserProfiles([message]);
+  return { ok: true as const, message: toPublicMessage(hydrated) };
 }
 
 export async function editChatMessage(input: {
@@ -406,7 +494,8 @@ export async function editChatMessage(input: {
     message,
   });
 
-  return { ok: true as const, message: toPublicMessage(message) };
+  const [hydrated] = await hydrateMessageUserProfiles([message]);
+  return { ok: true as const, message: toPublicMessage(hydrated) };
 }
 
 export async function clearAdminChatMessages(input: { roomId?: string }) {
@@ -436,6 +525,14 @@ export async function storeChatMessage(input: {
   const replyTo = await findReplyPreview(roomId, input.replyToId);
 
   const userSnapshot = await getChatUserSnapshot(input.user.id);
+  const freshUser = await prisma.user.findUnique({
+    where: { id: userSnapshot.id },
+    select: { level: true },
+  });
+  const senderLevel = Math.max(
+    1,
+    Number(freshUser?.level ?? userSnapshot.level ?? 1),
+  );
   const slowmode = await tryAcquireSlowmodeLock({
     roomId,
     userId: input.user.id,
@@ -461,14 +558,20 @@ export async function storeChatMessage(input: {
     sender: {
       id: String(userSnapshot.id),
       name: userSnapshot.name,
+      username: userSnapshot.username,
+      fullName: userSnapshot.fullName,
       avatar: userSnapshot.avatar,
       isVerified: Boolean(userSnapshot.isVerified),
       verifiedAt: userSnapshot.verifiedAt,
+      level: senderLevel,
       nageTag: userSnapshot.nageTag,
       frame: userSnapshot.frame,
       role: userSnapshot.role ?? null,
     },
     senderName: userSnapshot.name,
+    senderUsername: userSnapshot.username,
+    senderFullName: userSnapshot.fullName,
+    senderLevel,
     senderAvatar: userSnapshot.avatar,
     senderNageTag: userSnapshot.nageTag,
     senderFrame: userSnapshot.frame,

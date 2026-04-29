@@ -41,6 +41,7 @@ type CommentRecord = Comment & {
 const COMMENT_USER_SELECT = {
   id: true,
   username: true,
+  fullName: true,
   avatar: true,
   isVerified: true,
   exp: true,

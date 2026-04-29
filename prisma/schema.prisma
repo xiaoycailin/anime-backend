@@ -58,6 +58,7 @@ model User {
   id                     Int                     @id @default(autoincrement())
   email                  String                  @unique
   username               String                  @unique
+  fullName               String?                 @map("full_name") @db.VarChar(100)
   password               String
   avatar                 String?
   loginType              String                  @default("email") @map("login_type") @db.VarChar(30)

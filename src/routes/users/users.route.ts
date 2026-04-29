@@ -14,6 +14,7 @@ import { ok, paginated } from "../../utils/response";
 const PUBLIC_USER_SELECT = {
   id: true,
   username: true,
+  fullName: true,
   avatar: true,
   isVerified: true,
   exp: true,
@@ -57,13 +58,14 @@ export const usersRoutes: FastifyPluginAsync = async (app) => {
 
       const users = await prisma.user.findMany({
         where: {
-          username: { contains: q },
+          OR: [{ username: { contains: q } }, { fullName: { contains: q } }],
         },
         orderBy: [{ isVerified: "desc" }, { username: "asc" }],
         take: limit,
         select: {
           id: true,
           username: true,
+          fullName: true,
           avatar: true,
           isVerified: true,
         },
@@ -97,6 +99,7 @@ export const usersRoutes: FastifyPluginAsync = async (app) => {
         return {
           id: user.id,
           username: user.username,
+          fullName: user.fullName?.trim() || user.username,
           avatar: user.avatar,
           isVerified: Boolean(user.isVerified),
           exp,
