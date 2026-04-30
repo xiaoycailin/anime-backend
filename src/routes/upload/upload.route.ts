@@ -38,6 +38,7 @@ import {
   enqueueUrlUpload,
   prepareUrlUploadSession,
 } from "../../services/url-upload-queue.service";
+import { importSubtitleFile } from "../../services/subtitle.service";
 import {
   clearPlaylistCache,
   clearSegmentSet,
@@ -57,6 +58,12 @@ import { createRedisSubscriber } from "../../lib/redis";
 
 const MAX_CHUNK_SIZE = 20 * 1024 * 1024;
 const MAX_SEGMENT_SIZE = 25 * 1024 * 1024;
+
+type UrlSubtitleInput = {
+  language?: string;
+  label?: string;
+  sourceUrl?: string;
+};
 
 export const uploadRoutes: FastifyPluginAsync = async (app) => {
   // SSE handles its own (query-token based) auth, so we skip the global hook
@@ -431,6 +438,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       sesid?: string;
       episodeId?: number | string;
       sources?: Array<{ resolution: number | string; url: string }>;
+      subtitles?: UrlSubtitleInput[];
     };
 
     const sesid = typeof body.sesid === "string" ? body.sesid.trim() : "";
@@ -521,6 +529,44 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       `Session URL dibuat dengan ${sources.length} source`,
     );
     const prepared = await prepareUrlUploadSession(session.id);
+    const subtitles = Array.isArray(body.subtitles) ? body.subtitles : [];
+    for (const rawSubtitle of subtitles) {
+      const language =
+        typeof rawSubtitle?.language === "string"
+          ? rawSubtitle.language.trim().toLowerCase()
+          : "";
+      const label =
+        typeof rawSubtitle?.label === "string"
+          ? rawSubtitle.label.trim()
+          : "";
+      const sourceUrl =
+        typeof rawSubtitle?.sourceUrl === "string"
+          ? rawSubtitle.sourceUrl.trim()
+          : "";
+
+      if (!language && !label && !sourceUrl) continue;
+      if (!language || !sourceUrl) {
+        throw badRequest("Subtitle wajib punya language dan sourceUrl");
+      }
+      if (!/^https?:\/\//i.test(sourceUrl)) {
+        throw badRequest(`URL subtitle ${language} tidak valid`);
+      }
+      if (!prepared.masterPlaylistUrl) {
+        throw badRequest("Master playlist URL belum siap untuk subtitle");
+      }
+
+      const track = await importSubtitleFile({
+        episodeId,
+        serverUrl: prepared.masterPlaylistUrl,
+        language,
+        label: label || language.toUpperCase(),
+        sourceUrl,
+      });
+      await appendEncodingLog(
+        session.id,
+        `Subtitle ${track.label} (${track.language}) terpasang ke server R2`,
+      );
+    }
     await enqueueUrlUpload(session.id);
 
     return created(reply, {
