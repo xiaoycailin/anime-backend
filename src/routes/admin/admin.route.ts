@@ -17,6 +17,7 @@ import {
   createRoleNotification,
   createSegmentNotification,
 } from "../../services/notification.service";
+import { markEpisodeReleasedAndNotifyOnce } from "../../services/release-schedule.service";
 import { calculateLevel } from "../../services/exp.service";
 import { badRequest, notFound } from "../../utils/http-error";
 import { created, ok, paginated } from "../../utils/response";
@@ -76,6 +77,7 @@ type EpisodeBody = {
   date?: string | null;
   status?: string | null;
   skipIntroSeconds?: number | null;
+  scheduledReleaseAt?: string | Date | null;
 };
 
 type ServerBody = {
@@ -228,6 +230,10 @@ function cleanEpisodeData(body: EpisodeBody) {
     body.skipIntroSeconds === null || body.skipIntroSeconds === undefined
       ? body.skipIntroSeconds
       : Math.max(0, Number(body.skipIntroSeconds));
+  const scheduledReleaseAt =
+    body.scheduledReleaseAt === null || body.scheduledReleaseAt === undefined
+      ? body.scheduledReleaseAt
+      : new Date(body.scheduledReleaseAt);
 
   return {
     ...(body.animeId !== undefined ? { animeId: Number(body.animeId) } : {}),
@@ -244,6 +250,16 @@ function cleanEpisodeData(body: EpisodeBody) {
           skipIntroSeconds:
             skipIntroSeconds === null || Number.isFinite(skipIntroSeconds)
               ? skipIntroSeconds
+              : null,
+        }
+      : {}),
+    ...(body.scheduledReleaseAt !== undefined
+      ? {
+          scheduledReleaseAt:
+            scheduledReleaseAt === null ||
+            (scheduledReleaseAt instanceof Date &&
+              !Number.isNaN(scheduledReleaseAt.getTime()))
+              ? scheduledReleaseAt
               : null,
         }
       : {}),
@@ -682,28 +698,15 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const episode = await prisma.episode.create({
       data: cleanEpisodeData(body) as any,
       include: {
-        anime: { select: { id: true, title: true, slug: true } },
+        anime: { select: { id: true, title: true, slug: true, thumbnail: true } },
       },
     });
 
     await CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug);
 
     await Promise.all([
-      createBroadcastNotification({
-        category: "content_update",
-        type: "episode_published",
-        title: `Episode baru: ${episode.anime.title}`,
-        message: `Episode ${episode.number} sudah tayang dan siap ditonton.`,
-        link: `/anime/${episode.anime.slug}/${episode.slug}`,
-        topic: "episode",
-        payload: {
-          animeId: episode.anime.id,
-          animeSlug: episode.anime.slug,
-          animeTitle: episode.anime.title,
-          episodeId: episode.id,
-          episodeSlug: episode.slug,
-          episodeNumber: episode.number,
-        },
+      markEpisodeReleasedAndNotifyOnce({
+        episode,
         createdById: request.user.id,
       }),
       createRoleNotification({
@@ -1744,6 +1747,122 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return ok(reply, { data: null, message: `Laporan ${status}` });
+  });
+
+  // ── GET /admin/episode-reports ────────────────────────────────────────────
+  app.get<{
+    Querystring: { page?: string; limit?: string; status?: string; reason?: string };
+  }>("/episode-reports", async (request, reply) => {
+    const page = Math.max(1, Number(request.query.page) || 1);
+    const limit = Math.min(Math.max(1, Number(request.query.limit) || 20), 100);
+    const skip = (page - 1) * limit;
+    const status = request.query.status as
+      | "pending"
+      | "resolved"
+      | "dismissed"
+      | undefined;
+    const reason = request.query.reason as
+      | "video_unavailable"
+      | "playback_error"
+      | "wrong_episode"
+      | "audio_problem"
+      | "subtitle_problem"
+      | "slow_loading"
+      | "other"
+      | undefined;
+
+    const where = {
+      ...(status ? { status } : {}),
+      ...(reason ? { reason } : {}),
+    };
+
+    const [total, reports, statusCounts] = await Promise.all([
+      prisma.episodeReport.count({ where }),
+      prisma.episodeReport.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+        include: {
+          reporter: { select: { id: true, username: true, fullName: true, avatar: true } },
+          resolvedBy: { select: { id: true, username: true, fullName: true } },
+          episode: {
+            select: {
+              id: true,
+              slug: true,
+              number: true,
+              title: true,
+              thumbnail: true,
+              status: true,
+              anime: {
+                select: {
+                  id: true,
+                  slug: true,
+                  title: true,
+                  thumbnail: true,
+                },
+              },
+              servers: {
+                select: { id: true, label: true, isPrimary: true },
+                orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
+              },
+            },
+          },
+        },
+      }),
+      prisma.episodeReport.groupBy({
+        by: ["status"],
+        _count: { id: true },
+      }),
+    ]);
+
+    const counts = { pending: 0, resolved: 0, dismissed: 0 } as Record<
+      string,
+      number
+    >;
+    for (const row of statusCounts) counts[row.status] = row._count.id;
+
+    return ok(reply, {
+      data: { reports, total, page, limit, counts },
+    });
+  });
+
+  // ── PATCH /admin/episode-reports/:id ─────────────────────────────────────
+  app.patch<{
+    Params: { id: string };
+    Body: { status?: "resolved" | "dismissed"; note?: string };
+  }>("/episode-reports/:id", async (request, reply) => {
+    const reportId = Number(request.params.id);
+    if (!Number.isFinite(reportId) || reportId <= 0) {
+      return reply.code(400).send({ error: "id tidak valid" });
+    }
+
+    const { status } = request.body ?? {};
+    if (!status || !["resolved", "dismissed"].includes(status)) {
+      return reply
+        .code(400)
+        .send({ error: "status harus resolved atau dismissed" });
+    }
+
+    const report = await prisma.episodeReport.findUnique({
+      where: { id: reportId },
+      select: { id: true },
+    });
+    if (!report)
+      return reply.code(404).send({ error: "Laporan tidak ditemukan" });
+
+    const adminId = (request.user as { id: number }).id;
+
+    await prisma.episodeReport.update({
+      where: { id: reportId },
+      data: {
+        status,
+        resolvedAt: new Date(),
+        resolvedById: adminId,
+      },
+    });
+
+    return ok(reply, { data: null, message: `Laporan episode ${status}` });
   });
 };
 

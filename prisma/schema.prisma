@@ -43,6 +43,7 @@ model Anime {
   // relasi
   genres        AnimeGenre[]
   episodes      Episode[]
+  releaseSchedules AnimeReleaseSchedule[]
   tags          AnimeTag[]
   extraMetadata AnimeMetaExtra[]
   likedBy       AnimeLike[]
@@ -85,6 +86,8 @@ model User {
   animeReviews           AnimeReview[]
   commentReports         CommentReport[]         @relation("CommentReportReporter")
   resolvedReports        CommentReport[]         @relation("CommentReportResolver")
+  episodeReports         EpisodeReport[]         @relation("EpisodeReportReporter")
+  resolvedEpisodeReports EpisodeReport[]         @relation("EpisodeReportResolver")
   expLogs                ExpLog[]
   decorations            UserDecoration[]
   refreshTokens          RefreshToken[]
@@ -485,18 +488,50 @@ model Episode {
   likes            Int      @default(0)
   dislikes         Int      @default(0)
   skipIntroSeconds Float?
+  scheduledReleaseAt DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @default(now()) @updatedAt
 
   anime          Anime             @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  releaseSchedule AnimeReleaseSchedule?
   servers        Server[]
   subtitles      Subtitle[]
   subtitleTracks SubtitleTrack[]
   reactions      EpisodeReaction[]
+  reports        EpisodeReport[]
 
   // @@unique([animeId, number]) ← HAPUS INI
 
   @@map("episodes")
+}
+
+enum ReleaseScheduleStatus {
+  scheduled
+  released
+  delayed
+  cancelled
+}
+
+model AnimeReleaseSchedule {
+  id                 Int                   @id @default(autoincrement())
+  animeId            Int
+  episodeId          Int?                  @unique
+  episodeNumber      Int
+  scheduledAt        DateTime
+  releasedAt         DateTime?
+  status             ReleaseScheduleStatus @default(scheduled)
+  source             String                @default("manual") @db.VarChar(40)
+  notificationSentAt DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  anime   Anime    @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  episode Episode? @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+
+  @@unique([animeId, episodeNumber])
+  @@index([scheduledAt, status])
+  @@index([animeId, scheduledAt])
+  @@map("anime_release_schedules")
 }
 
 model EpisodeReaction {
@@ -618,6 +653,16 @@ enum ReportStatus {
   dismissed
 }
 
+enum EpisodeReportReason {
+  video_unavailable
+  playback_error
+  wrong_episode
+  audio_problem
+  subtitle_problem
+  slow_loading
+  other
+}
+
 model CommentReport {
   id           Int          @id @default(autoincrement())
   reporterId   Int
@@ -636,6 +681,30 @@ model CommentReport {
   @@unique([reporterId, commentId])
   @@index([status, createdAt(sort: Desc)])
   @@map("comment_reports")
+}
+
+model EpisodeReport {
+  id           Int                 @id @default(autoincrement())
+  reporterId   Int?
+  episodeId    Int
+  reason       EpisodeReportReason
+  description  String?             @db.Text
+  contact      String?             @db.VarChar(191)
+  pageUrl      String?             @db.Text
+  serverLabel  String?             @db.VarChar(120)
+  status       ReportStatus        @default(pending)
+  resolvedAt   DateTime?
+  resolvedById Int?
+  createdAt    DateTime            @default(now())
+
+  reporter   User?   @relation("EpisodeReportReporter", fields: [reporterId], references: [id], onDelete: SetNull)
+  episode    Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  resolvedBy User?   @relation("EpisodeReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([episodeId, status, createdAt(sort: Desc)])
+  @@index([reporterId, episodeId, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("episode_reports")
 }
 
 // ─── VIDEO UPLOAD SESSIONS ────────────────────────────────────────────────────

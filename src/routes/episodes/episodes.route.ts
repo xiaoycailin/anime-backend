@@ -1,7 +1,8 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import type { ReactionType } from "@prisma/client";
+import type { ReactionType, ReleaseScheduleStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { addExp } from "../../services/exp.service";
+import { createRoleNotification } from "../../services/notification.service";
 import { ok, sendError } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import { normalizeTitle } from "../../utils/season-parser";
@@ -31,6 +32,108 @@ function formatRelativeTime(date: Date) {
 
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}h lalu`;
+}
+
+function formatScheduleDate(date: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function formatScheduleTime(date: Date) {
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function startOfJakartaDay(date = new Date()) {
+  const key = formatScheduleDate(date);
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, -7, 0, 0, 0));
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function scheduleStatus(input: {
+  status?: string | null;
+  scheduledAt: Date;
+  releasedAt?: Date | null;
+  episodeId?: number | null;
+}) {
+  if (input.status === "cancelled") return "cancelled";
+  if (input.releasedAt || input.episodeId) return "released";
+  if (input.scheduledAt.getTime() < Date.now()) return "delayed";
+  return "upcoming";
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RELEASE_INTERVAL_MS = 7 * DAY_MS;
+const MIN_PREDICTABLE_INTERVAL_MS = DAY_MS;
+const MAX_PREDICTABLE_INTERVAL_MS = 14 * DAY_MS;
+
+function releaseDateOfEpisode(input: {
+  scheduledReleaseAt?: Date | null;
+  createdAt: Date;
+}) {
+  return input.scheduledReleaseAt ?? input.createdAt;
+}
+
+function isLikelyFinishedAnime(input: {
+  status?: string | null;
+  totalEpisodes?: number | null;
+  latestEpisodeNumber: number;
+}) {
+  const status = input.status?.toLowerCase() ?? "";
+  if (
+    status.includes("complete") ||
+    status.includes("completed") ||
+    status.includes("finished") ||
+    status.includes("tamat") ||
+    status.includes("hiatus")
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    input.totalEpisodes &&
+      input.totalEpisodes > 0 &&
+      input.latestEpisodeNumber === input.totalEpisodes,
+  );
+}
+
+function estimateReleaseIntervalMs(
+  episodes: { number: number; scheduledReleaseAt?: Date | null; createdAt: Date }[],
+) {
+  const sorted = [...episodes].sort((left, right) => right.number - left.number);
+  const intervals: number[] = [];
+
+  for (let index = 0; index < sorted.length - 1; index += 1) {
+    const current = sorted[index];
+    const previous = sorted[index + 1];
+    if (current.number - previous.number !== 1) continue;
+
+    const diff =
+      releaseDateOfEpisode(current).getTime() -
+      releaseDateOfEpisode(previous).getTime();
+
+    if (diff >= MIN_PREDICTABLE_INTERVAL_MS && diff <= MAX_PREDICTABLE_INTERVAL_MS) {
+      intervals.push(diff);
+    }
+  }
+
+  if (!intervals.length) return DEFAULT_RELEASE_INTERVAL_MS;
+
+  intervals.sort((left, right) => left - right);
+  return intervals[Math.floor(intervals.length / 2)];
 }
 
 async function optionalUserId(
@@ -64,6 +167,16 @@ function reactionPayload(input: {
 }
 
 export const episodesRoutes: FastifyPluginAsync = async (app) => {
+  const VALID_REPORT_REASONS = [
+    "video_unavailable",
+    "playback_error",
+    "wrong_episode",
+    "audio_problem",
+    "subtitle_problem",
+    "slow_loading",
+    "other",
+  ] as const;
+
   app.get("/latest", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 10), 50);
@@ -135,6 +248,338 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         status: 500,
         message: "Failed to fetch latest episodes",
         errorCode: "LATEST_EPISODES_FETCH_FAILED",
+      });
+    }
+  });
+
+  app.get("/schedule", async (request, reply) => {
+    const query = request.query as {
+      days?: string;
+      limit?: string;
+      range?: string;
+      status?: string;
+    };
+    const days = Math.min(toPositiveInt(query.days, 7), 30);
+    const limit = Math.min(toPositiveInt(query.limit, 160), 300);
+    const today = startOfJakartaDay();
+    const range = query.range === "today" || query.range === "week"
+      ? query.range
+      : "rolling";
+    const statusFilter = ["upcoming", "released", "delayed", "cancelled"].includes(
+      query.status ?? "",
+    )
+      ? query.status
+      : "all";
+    const scheduleDbStatus =
+      statusFilter === "all"
+        ? undefined
+        : statusFilter === "upcoming" || statusFilter === "delayed"
+          ? "scheduled"
+          : statusFilter;
+    const start =
+      range === "today" || range === "week"
+        ? today
+        : addDays(today, -(days - 1));
+    const end =
+      range === "today"
+        ? addDays(today, 1)
+        : range === "week"
+          ? addDays(today, 7)
+          : addDays(today, days);
+
+    try {
+      const [schedules, fallbackEpisodes, releaseCandidateAnime] = await Promise.all([
+        prisma.animeReleaseSchedule.findMany({
+          where: {
+            scheduledAt: {
+              gte: start,
+              lt: end,
+            },
+            ...(scheduleDbStatus
+              ? { status: scheduleDbStatus as ReleaseScheduleStatus }
+              : {}),
+          },
+          orderBy: [{ scheduledAt: "asc" }],
+          take: limit,
+          include: {
+            anime: {
+              select: {
+                slug: true,
+                title: true,
+                thumbnail: true,
+                status: true,
+                type: true,
+              },
+            },
+            episode: {
+              select: {
+                id: true,
+                slug: true,
+                title: true,
+                thumbnail: true,
+                createdAt: true,
+              },
+            },
+          },
+        }),
+        prisma.episode.findMany({
+          where: {
+            createdAt: {
+              gte: start,
+              lt: end,
+            },
+            status: "published",
+            releaseSchedule: null,
+          },
+          orderBy: [{ createdAt: "desc" }],
+          take: limit,
+          select: {
+            id: true,
+            animeId: true,
+            number: true,
+            title: true,
+            date: true,
+            createdAt: true,
+            scheduledReleaseAt: true,
+            slug: true,
+            thumbnail: true,
+            anime: {
+              select: {
+                slug: true,
+                title: true,
+                thumbnail: true,
+                status: true,
+                type: true,
+              },
+            },
+          },
+        }),
+        prisma.anime.findMany({
+          where: {
+            episodes: {
+              some: {
+                status: "published",
+              },
+            },
+          },
+          orderBy: [{ updatedAt: "desc" }],
+          take: 500,
+          select: {
+            id: true,
+            slug: true,
+            title: true,
+            thumbnail: true,
+            status: true,
+            type: true,
+            totalEpisodes: true,
+            episodes: {
+              where: {
+                status: "published",
+              },
+              orderBy: [{ number: "desc" }, { createdAt: "desc" }],
+              take: 5,
+              select: {
+                id: true,
+                animeId: true,
+                number: true,
+                title: true,
+                thumbnail: true,
+                createdAt: true,
+                scheduledReleaseAt: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      type ScheduleItem = {
+        id: number;
+        animeId: number;
+        animeTitle: string;
+        animeSlug: string;
+        title: string;
+        episode: string;
+        episodeNumber: number;
+        thumbnail: string | null;
+        href: string;
+        scheduledAt: string;
+        releasedAt: string | null;
+        releaseTime: string;
+        scheduleStatus: string;
+        scheduleSource: string;
+        notificationSent: boolean;
+        animeStatus: string | null;
+        animeType: string | null;
+      };
+
+      const predictedItems: ScheduleItem[] = [];
+
+      if (statusFilter === "all" || statusFilter === "upcoming") {
+        const existingScheduleKeys = new Set(
+          schedules.map((item) => `${item.animeId}:${item.episodeNumber}`),
+        );
+
+        for (const anime of releaseCandidateAnime) {
+          const episodes = anime.episodes;
+          const latest = [...episodes].sort((left, right) => {
+            if (right.number !== left.number) return right.number - left.number;
+            return (
+              releaseDateOfEpisode(right).getTime() -
+              releaseDateOfEpisode(left).getTime()
+            );
+          })[0];
+          if (!latest) continue;
+
+          if (
+            isLikelyFinishedAnime({
+              status: anime.status,
+              totalEpisodes: anime.totalEpisodes,
+              latestEpisodeNumber: latest.number,
+            })
+          ) {
+            continue;
+          }
+
+          const nextEpisodeNumber = latest.number + 1;
+          const key = `${latest.animeId}:${nextEpisodeNumber}`;
+          if (existingScheduleKeys.has(key)) continue;
+
+          const predictedAt = new Date(
+            releaseDateOfEpisode(latest).getTime() +
+              estimateReleaseIntervalMs(episodes),
+          );
+
+          if (predictedAt < start || predictedAt >= end || predictedAt < today) {
+            continue;
+          }
+
+          predictedItems.push({
+            id: -anime.id,
+            animeId: anime.id,
+            animeTitle: normalizeTitle(anime.title),
+            animeSlug: anime.slug,
+            title: `${normalizeTitle(anime.title)} Episode ${nextEpisodeNumber}`,
+            episode: `Ep ${nextEpisodeNumber}`,
+            episodeNumber: nextEpisodeNumber,
+            thumbnail: latest.thumbnail ?? anime.thumbnail,
+            href: `/anime/${anime.slug}`,
+            scheduledAt: predictedAt.toISOString(),
+            releasedAt: null,
+            releaseTime: formatScheduleTime(predictedAt),
+            scheduleStatus: "upcoming",
+            scheduleSource: "prediction",
+            notificationSent: false,
+            animeStatus: anime.status,
+            animeType: anime.type,
+          });
+        }
+      }
+
+      const items: ScheduleItem[] = [
+        ...schedules.map((item: any) => {
+          const computedStatus = scheduleStatus({
+            status: item.status,
+            scheduledAt: item.scheduledAt,
+            releasedAt: item.releasedAt,
+            episodeId: item.episodeId,
+          });
+          return {
+            id: item.episode?.id ?? item.id,
+            animeId: item.animeId,
+            animeTitle: normalizeTitle(item.anime.title),
+            animeSlug: item.anime.slug,
+            title:
+              item.episode?.title ??
+              `${normalizeTitle(item.anime.title)} Episode ${item.episodeNumber}`,
+            episode: `Ep ${item.episodeNumber}`,
+            episodeNumber: item.episodeNumber,
+            thumbnail: item.episode?.thumbnail ?? item.anime.thumbnail,
+            href: item.episode?.slug
+              ? `/anime/${item.anime.slug}/${item.episode.slug}`
+              : `/anime/${item.anime.slug}`,
+            scheduledAt: item.scheduledAt.toISOString(),
+            releasedAt: item.releasedAt?.toISOString() ?? null,
+            releaseTime: formatScheduleTime(item.scheduledAt),
+            scheduleStatus: computedStatus,
+            scheduleSource: item.source,
+            notificationSent: Boolean(item.notificationSentAt),
+            animeStatus: item.anime.status,
+            animeType: item.anime.type,
+          };
+        }),
+        ...fallbackEpisodes.map((item) => ({
+          id: item.id,
+          animeId: item.animeId,
+          animeTitle: normalizeTitle(item.anime.title),
+          animeSlug: item.anime.slug,
+          title: item.title,
+          episode: `Ep ${item.number}`,
+          episodeNumber: item.number,
+          thumbnail: item.thumbnail ?? item.anime.thumbnail,
+          href: `/anime/${item.anime.slug}/${item.slug}`,
+          scheduledAt: (item.scheduledReleaseAt ?? item.createdAt).toISOString(),
+          releasedAt: item.createdAt.toISOString(),
+          releaseTime: formatScheduleTime(item.scheduledReleaseAt ?? item.createdAt),
+          scheduleStatus: "released",
+          scheduleSource: item.scheduledReleaseAt ? "episode" : "episode.createdAt",
+          notificationSent: false,
+          animeStatus: item.anime.status,
+          animeType: item.anime.type,
+        })),
+        ...predictedItems,
+      ]
+        .filter((item) =>
+          statusFilter === "all" ? true : item.scheduleStatus === statusFilter,
+        )
+        .sort((left, right) => {
+          const leftTime = new Date(left.scheduledAt).getTime();
+          const rightTime = new Date(right.scheduledAt).getTime();
+          if (left.scheduleStatus === "upcoming" || right.scheduleStatus === "upcoming") {
+            return leftTime - rightTime;
+          }
+          return rightTime - leftTime;
+        })
+        .slice(0, limit);
+
+      const groups = new Map<string, {
+        date: string;
+        count: number;
+        episodes: ScheduleItem[];
+      }>();
+
+      for (const item of items) {
+        const dateKey = formatScheduleDate(new Date(item.scheduledAt));
+        const group = groups.get(dateKey) ?? {
+          date: dateKey,
+          count: 0,
+          episodes: [],
+        };
+
+        group.episodes.push(item);
+        group.count = group.episodes.length;
+        groups.set(dateKey, group);
+      }
+
+      return ok(reply, {
+        message: "Episode schedule fetched successfully",
+        data: Array.from(groups.values()),
+        meta: {
+          days,
+          limit,
+          range,
+          status: statusFilter,
+          timezone: "Asia/Jakarta",
+          source: "animeReleaseSchedule+episodeFallback",
+          start: start.toISOString(),
+          end: end.toISOString(),
+        },
+      });
+    } catch (error) {
+      request.log.error(error);
+      return sendError(reply, {
+        status: 500,
+        message: "Failed to fetch episode schedule",
+        errorCode: "EPISODE_SCHEDULE_FETCH_FAILED",
       });
     }
   });
@@ -336,4 +781,109 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
       });
     },
   );
+
+  app.post("/:episodeId/report", async (request, reply) => {
+    const params = request.params as { episodeId: string };
+    const body = (request.body ?? {}) as {
+      reason?: string;
+      description?: string;
+      contact?: string;
+      pageUrl?: string;
+      serverLabel?: string;
+    };
+    const episodeId = Number(params.episodeId);
+
+    if (!Number.isFinite(episodeId) || episodeId <= 0) {
+      throw badRequest("episodeId tidak valid");
+    }
+
+    if (
+      !body.reason ||
+      !VALID_REPORT_REASONS.includes(
+        body.reason as (typeof VALID_REPORT_REASONS)[number],
+      )
+    ) {
+      throw badRequest(
+        `reason harus salah satu dari: ${VALID_REPORT_REASONS.join(", ")}`,
+      );
+    }
+
+    const reporterId = await optionalUserId(app, request);
+    const [episode, existing] = await Promise.all([
+      prisma.episode.findUnique({
+        where: { id: episodeId },
+        select: {
+          id: true,
+          number: true,
+          title: true,
+          slug: true,
+          anime: {
+            select: {
+              slug: true,
+              title: true,
+              thumbnail: true,
+            },
+          },
+        },
+      }),
+      reporterId
+        ? prisma.episodeReport.findFirst({
+            where: {
+              reporterId,
+              episodeId,
+              reason: body.reason as (typeof VALID_REPORT_REASONS)[number],
+              status: "pending",
+            },
+            select: { id: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    if (!episode) throw notFound("Episode tidak ditemukan");
+    if (existing) throw badRequest("Kamu sudah pernah mengirim laporan yang sama");
+
+    const description = body.description
+      ? String(body.description).trim().slice(0, 800)
+      : "";
+    const contact = body.contact ? String(body.contact).trim().slice(0, 191) : "";
+    const pageUrl = body.pageUrl ? String(body.pageUrl).trim().slice(0, 1000) : "";
+    const serverLabel = body.serverLabel
+      ? String(body.serverLabel).trim().slice(0, 120)
+      : "";
+
+    const report = await prisma.episodeReport.create({
+      data: {
+        reporterId,
+        episodeId,
+        reason: body.reason as (typeof VALID_REPORT_REASONS)[number],
+        description: description || null,
+        contact: contact || null,
+        pageUrl: pageUrl || null,
+        serverLabel: serverLabel || null,
+      },
+      select: { id: true },
+    });
+
+    await createRoleNotification({
+      role: "admin",
+      category: "admin_operational",
+      type: "episode_broken_report",
+      title: "Laporan episode rusak",
+      message: `${episode.anime.title} Ep ${episode.number} dilaporkan bermasalah.`,
+      link: "/admin/episode-reports",
+      image: episode.anime.thumbnail,
+      payload: {
+        reportId: report.id,
+        episodeId,
+        animeSlug: episode.anime.slug,
+        episodeSlug: episode.slug,
+        reason: body.reason,
+      },
+    }).catch((error) => request.log.error(error));
+
+    return ok(reply, {
+      data: { id: report.id },
+      message: "Laporan berhasil dikirim, admin akan cek episode ini.",
+    });
+  });
 };
