@@ -283,6 +283,30 @@ export function buildLocalIndexPlaylist(input: {
   return lines.join("\n") + "\n";
 }
 
+export function buildPartialIndexPlaylist(input: {
+  segments: ParsedSegment[];
+  targetDuration: number;
+  completedIndexes: number[];
+  complete?: boolean;
+}): string {
+  const completed = new Set(input.completedIndexes);
+  const lines: string[] = [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-MEDIA-SEQUENCE:0",
+    `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(input.targetDuration || 1))}`,
+  ];
+
+  for (const seg of input.segments) {
+    if (!completed.has(seg.index)) break;
+    lines.push(`#EXTINF:${seg.durationSec.toFixed(3)},`);
+    lines.push(`segment_${String(seg.index).padStart(5, "0")}.ts`);
+  }
+
+  if (input.complete) lines.push("#EXT-X-ENDLIST");
+  return lines.join("\n") + "\n";
+}
+
 export function buildUrlMasterPlaylist(input: {
   resolutions: number[];
 }): string {
@@ -299,6 +323,45 @@ export function buildUrlMasterPlaylist(input: {
     );
   }
   return lines.join("\n") + "\n";
+}
+
+export async function publishUrlIndexPlaylist(input: {
+  uploadId: string;
+  videoId: string;
+  resolution: number;
+  parsed: ParsedPlaylist;
+  complete?: boolean;
+}) {
+  const completedIndexes = await getDoneSegments(input.uploadId, input.resolution);
+  const indexBody = buildPartialIndexPlaylist({
+    segments: input.parsed.segments,
+    targetDuration: input.parsed.targetDuration,
+    completedIndexes,
+    complete:
+      input.complete && completedIndexes.length >= input.parsed.segments.length,
+  });
+  const indexKey = r2PlaylistKey(input.videoId, input.resolution);
+  await uploadStreamingObject({
+    key: indexKey,
+    body: Buffer.from(indexBody, "utf8"),
+    contentType: "application/vnd.apple.mpegurl",
+    cacheControl: "public, max-age=15",
+  });
+  return getStreamingPublicUrl(indexKey);
+}
+
+export async function publishUrlMasterPlaylist(input: {
+  videoId: string;
+  resolutions: number[];
+}) {
+  const masterKey = r2MasterKey(input.videoId);
+  await uploadStreamingObject({
+    key: masterKey,
+    body: Buffer.from(buildUrlMasterPlaylist(input), "utf8"),
+    contentType: "application/vnd.apple.mpegurl",
+    cacheControl: "public, max-age=15",
+  });
+  return getStreamingPublicUrl(masterKey);
 }
 
 // ── Progress aggregation ─────────────────────────────────────────────────────
@@ -355,6 +418,7 @@ export async function refreshUrlProgress(
   const updates: Parameters<typeof updateSessionStatus>[1] = {
     urlProgress: next,
     uploadProgress: Number(uploadProgress.toFixed(2)),
+    r2UploadProgress: Number(uploadProgress.toFixed(2)),
     receivedChunks: completedSegments,
   };
   if (totalSegments > 0) {

@@ -384,13 +384,15 @@ export async function expireSessionImmediately(uploadId: string) {
 
 export async function failSession(uploadId: string, message: string) {
   try {
-    await (prisma as any).uploadSession.update({
+    const row = await (prisma as any).uploadSession.update({
       where: { id: uploadId },
       data: {
         status: "failed",
         errorMessage: message.slice(0, 1000),
       },
     });
+    const record = toRecord(row);
+    void publishUploadEvent(uploadId, { type: "status", session: serializeSession(record) });
   } catch {
     // ignore
   }

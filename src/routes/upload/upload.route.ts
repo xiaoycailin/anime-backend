@@ -35,6 +35,10 @@ import {
   reconcileEncodingJobForSession,
 } from "../../services/video-pipeline.service";
 import {
+  enqueueUrlUpload,
+  prepareUrlUploadSession,
+} from "../../services/url-upload-queue.service";
+import {
   clearPlaylistCache,
   clearSegmentSet,
   failUrlSession,
@@ -139,25 +143,9 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     return ok(reply, {
       message: "Upload status fetched",
       data: {
-        uploadId: checked.id,
-        episodeId: checked.episodeId,
-        status: checked.status,
-        expiresAt: checked.expiresAt.toISOString(),
-        totalChunks: checked.totalChunks,
+        ...serializeSession(checked),
         receivedChunks: receivedChunks.length,
         receivedChunkIndexes: receivedChunks,
-        uploadProgress: checked.uploadProgress,
-        encodingProgress: checked.encodingProgress,
-        r2UploadProgress: checked.r2UploadProgress,
-        currentResolution: checked.currentResolution,
-        resolutionsCompleted: checked.resolutionsDone,
-        masterPlaylistUrl: checked.masterPlaylistUrl,
-        videoId: checked.videoId,
-        errorMessage: checked.errorMessage,
-        fileName: checked.fileName,
-        fileSize: checked.fileSize,
-        fileLastModified: checked.fileLastModified,
-        initialResolution: checked.initialResolution,
         encodingLogs,
       },
     });
@@ -185,25 +173,9 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     return ok(reply, {
       message: "Active session ditemukan",
       data: {
-        uploadId: session.id,
-        episodeId: session.episodeId,
-        status: session.status,
-        expiresAt: session.expiresAt.toISOString(),
-        totalChunks: session.totalChunks,
+        ...serializeSession(session),
         receivedChunks: receivedChunks.length,
         receivedChunkIndexes: receivedChunks,
-        uploadProgress: session.uploadProgress,
-        encodingProgress: session.encodingProgress,
-        r2UploadProgress: session.r2UploadProgress,
-        currentResolution: session.currentResolution,
-        resolutionsCompleted: session.resolutionsDone,
-        masterPlaylistUrl: session.masterPlaylistUrl,
-        videoId: session.videoId,
-        errorMessage: session.errorMessage,
-        fileName: session.fileName,
-        fileSize: session.fileSize,
-        fileLastModified: session.fileLastModified,
-        initialResolution: session.initialResolution,
         encodingLogs,
       },
     });
@@ -548,10 +520,12 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       session.id,
       `Session URL dibuat dengan ${sources.length} source`,
     );
+    const prepared = await prepareUrlUploadSession(session.id);
+    await enqueueUrlUpload(session.id);
 
     return created(reply, {
-      message: "URL upload session created",
-      data: serializeSession(session),
+      message: "URL upload session queued",
+      data: serializeSession(prepared),
     });
   });
 
