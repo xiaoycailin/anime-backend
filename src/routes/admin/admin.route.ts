@@ -66,6 +66,8 @@ type AnimeBody = {
   season?: string | null;
   country?: string | null;
   rating?: number | null;
+  skipIntroSeconds?: number | null;
+  skipOutroSeconds?: number | null;
 };
 
 type EpisodeBody = {
@@ -77,6 +79,7 @@ type EpisodeBody = {
   date?: string | null;
   status?: string | null;
   skipIntroSeconds?: number | null;
+  skipOutroSeconds?: number | null;
   scheduledReleaseAt?: string | Date | null;
 };
 
@@ -204,6 +207,8 @@ function weekStart() {
 }
 
 function cleanAnimeData(body: AnimeBody) {
+  const skipIntroSeconds = cleanOptionalSeconds(body.skipIntroSeconds);
+  const skipOutroSeconds = cleanOptionalSeconds(body.skipOutroSeconds);
   return {
     ...(body.slug ? { slug: body.slug.trim() } : {}),
     ...(body.title ? { title: body.title.trim() } : {}),
@@ -222,14 +227,24 @@ function cleanAnimeData(body: AnimeBody) {
     ...(body.season !== undefined ? { season: body.season } : {}),
     ...(body.country !== undefined ? { country: body.country } : {}),
     ...(body.rating !== undefined ? { rating: body.rating } : {}),
+    ...(body.skipIntroSeconds !== undefined
+      ? { skipIntroSeconds }
+      : {}),
+    ...(body.skipOutroSeconds !== undefined
+      ? { skipOutroSeconds }
+      : {}),
   };
 }
 
+function cleanOptionalSeconds(value: number | null | undefined) {
+  if (value === null || value === undefined) return value;
+  const seconds = Math.max(0, Number(value));
+  return Number.isFinite(seconds) ? seconds : null;
+}
+
 function cleanEpisodeData(body: EpisodeBody) {
-  const skipIntroSeconds =
-    body.skipIntroSeconds === null || body.skipIntroSeconds === undefined
-      ? body.skipIntroSeconds
-      : Math.max(0, Number(body.skipIntroSeconds));
+  const skipIntroSeconds = cleanOptionalSeconds(body.skipIntroSeconds);
+  const skipOutroSeconds = cleanOptionalSeconds(body.skipOutroSeconds);
   const scheduledReleaseAt =
     body.scheduledReleaseAt === null || body.scheduledReleaseAt === undefined
       ? body.scheduledReleaseAt
@@ -247,10 +262,12 @@ function cleanEpisodeData(body: EpisodeBody) {
       : {}),
     ...(body.skipIntroSeconds !== undefined
       ? {
-          skipIntroSeconds:
-            skipIntroSeconds === null || Number.isFinite(skipIntroSeconds)
-              ? skipIntroSeconds
-              : null,
+          skipIntroSeconds,
+        }
+      : {}),
+    ...(body.skipOutroSeconds !== undefined
+      ? {
+          skipOutroSeconds,
         }
       : {}),
     ...(body.scheduledReleaseAt !== undefined

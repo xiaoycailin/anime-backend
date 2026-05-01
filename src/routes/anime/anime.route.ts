@@ -1509,6 +1509,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           createdAt: true,
           views: true,
           skipIntroSeconds: true,
+          skipOutroSeconds: true,
           servers: {
             orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
             select: {
@@ -1555,6 +1556,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
               studio: true,
               type: true,
               totalEpisodes: true,
+              skipIntroSeconds: true,
+              skipOutroSeconds: true,
               episodes: true,
               genres: {
                 select: {
@@ -1828,6 +1831,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         createdAt: episode.createdAt,
         views: episode.views,
         skipIntroSeconds: episode.skipIntroSeconds,
+        skipOutroSeconds: episode.skipOutroSeconds,
         episodes: episode.anime.episodes,
         seasons,
         anime: {
@@ -1840,6 +1844,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           studio: episode.anime.studio,
           type: episode.anime.type,
           totalEpisodes: episode.anime.totalEpisodes,
+          skipIntroSeconds: episode.anime.skipIntroSeconds,
+          skipOutroSeconds: episode.anime.skipOutroSeconds,
           genres: currentGenres,
           tags: episode.anime.tags.map((item) => item.tag),
         },

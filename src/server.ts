@@ -9,10 +9,22 @@ import { startEncodingWorker } from "./services/video-pipeline.service";
 import { startUrlUploadWorker } from "./services/url-upload-queue.service";
 import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
 import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
-import { closeRedis, redis } from "./lib/redis";
+import { closeRedis, redis, isRedisReady } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
 const app = buildApp();
+let redisDependentJobsStarted = false;
+
+function startRedisDependentJobs() {
+  if (redisDependentJobsStarted) return;
+  redisDependentJobsStarted = true;
+  startEncodingWorker();
+  startUrlUploadWorker();
+  startChatCleanupJob({
+    info: (msg) => app.log.info(msg),
+    error: (msg, err) => app.log.error({ err }, msg),
+  });
+}
 
 setCacheLogger({
   info: (msg) => app.log.debug({ scope: "cache" }, msg),
@@ -40,16 +52,22 @@ async function start() {
     await app.listen({ port, host: "0.0.0.0" });
     startTrendingRefreshJob();
     startReminderJob();
-    startEncodingWorker();
-    startUrlUploadWorker();
     startUploadCleanupJob({
       info: (msg) => app.log.info(msg),
       error: (msg, err) => app.log.error({ err }, msg),
     });
-    startChatCleanupJob({
-      info: (msg) => app.log.info(msg),
-      error: (msg, err) => app.log.error({ err }, msg),
-    });
+    if (isRedisReady()) {
+      startRedisDependentJobs();
+    } else {
+      app.log.warn(
+        { redisStatus: redis.status },
+        "Redis belum ready; worker upload/video dan chat cleanup ditunda",
+      );
+      redis.once("ready", () => {
+        app.log.info("Redis ready; starting Redis-dependent jobs");
+        startRedisDependentJobs();
+      });
+    }
     app.log.info(
       { redisStatus: redis.status },
       `Server running on http://localhost:${port}`,

@@ -20,7 +20,7 @@ function buildRedisOptions(): RedisOptions {
     keyPrefix: REDIS_KEY_PREFIX,
     lazyConnect: false,
     enableAutoPipelining: true,
-    maxRetriesPerRequest: 2,
+    maxRetriesPerRequest: null,
     connectTimeout: 5000,
     retryStrategy(times) {
       const delay = Math.min(times * 200, 3000);

@@ -23,16 +23,18 @@ model Anime {
   followed          Int?
 
   // metadata fields
-  status        String? @db.VarChar(50)
-  network       String? @db.VarChar(100)
-  studio        String? @db.VarChar(100)
-  released      String? @db.VarChar(50)
-  duration      String? @db.VarChar(50)
-  season        String? @db.VarChar(20)
-  country       String? @db.VarChar(50)
-  type          String? @db.VarChar(50)
-  totalEpisodes Int?
-  fansub        String? @db.VarChar(100)
+  status           String? @db.VarChar(50)
+  network          String? @db.VarChar(100)
+  studio           String? @db.VarChar(100)
+  released         String? @db.VarChar(50)
+  duration         String? @db.VarChar(50)
+  season           String? @db.VarChar(20)
+  country          String? @db.VarChar(50)
+  type             String? @db.VarChar(50)
+  totalEpisodes    Int?
+  fansub           String? @db.VarChar(100)
+  skipIntroSeconds Float?
+  skipOutroSeconds Float?
 
   // engagement stats
   views                  Int       @default(0)
@@ -41,13 +43,13 @@ model Anime {
   trendingScoreUpdatedAt DateTime?
 
   // relasi
-  genres        AnimeGenre[]
-  episodes      Episode[]
+  genres           AnimeGenre[]
+  episodes         Episode[]
   releaseSchedules AnimeReleaseSchedule[]
-  tags          AnimeTag[]
-  extraMetadata AnimeMetaExtra[]
-  likedBy       AnimeLike[]
-  reviews       AnimeReview[]
+  tags             AnimeTag[]
+  extraMetadata    AnimeMetaExtra[]
+  likedBy          AnimeLike[]
+  reviews          AnimeReview[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -475,30 +477,31 @@ model AnimeMetaExtra {
 // ─── EPISODE ──────────────────────────────────────────────────────────────────
 
 model Episode {
-  id               Int      @id @default(autoincrement())
-  animeId          Int
-  slug             String   @unique @db.VarChar(255)
-  number           Int
-  title            String   @db.Text
-  thumbnail        String?  @db.Text
-  sub              String?  @db.VarChar(20)
-  date             String?  @db.VarChar(50)
-  status           String   @default("published") @db.VarChar(20)
-  views            Int      @default(0)
-  likes            Int      @default(0)
-  dislikes         Int      @default(0)
-  skipIntroSeconds Float?
+  id                 Int       @id @default(autoincrement())
+  animeId            Int
+  slug               String    @unique @db.VarChar(255)
+  number             Int
+  title              String    @db.Text
+  thumbnail          String?   @db.Text
+  sub                String?   @db.VarChar(20)
+  date               String?   @db.VarChar(50)
+  status             String    @default("published") @db.VarChar(20)
+  views              Int       @default(0)
+  likes              Int       @default(0)
+  dislikes           Int       @default(0)
+  skipIntroSeconds   Float?
+  skipOutroSeconds   Float?
   scheduledReleaseAt DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @default(now()) @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @default(now()) @updatedAt
 
-  anime          Anime             @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  anime           Anime                 @relation(fields: [animeId], references: [id], onDelete: Cascade)
   releaseSchedule AnimeReleaseSchedule?
-  servers        Server[]
-  subtitles      Subtitle[]
-  subtitleTracks SubtitleTrack[]
-  reactions      EpisodeReaction[]
-  reports        EpisodeReport[]
+  servers         Server[]
+  subtitles       Subtitle[]
+  subtitleTracks  SubtitleTrack[]
+  reactions       EpisodeReaction[]
+  reports         EpisodeReport[]
 
   // @@unique([animeId, number]) ← HAPUS INI
 

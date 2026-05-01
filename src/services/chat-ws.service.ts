@@ -600,7 +600,12 @@ function startSubscriber() {
   if (subscriberStarted) return;
   subscriberStarted = true;
   const subscriber = createRedisSubscriber();
-  void subscriber.subscribe(CHAT_BROADCAST_CHANNEL);
+  void subscriber.subscribe(CHAT_BROADCAST_CHANNEL).catch((error) => {
+    subscriberStarted = false;
+    console.error("[chat-ws] redis subscribe failed:", error?.message ?? error);
+    subscriber.disconnect();
+    setTimeout(startSubscriber, 5000).unref?.();
+  });
   subscriber.on("message", (_channel, raw) => {
     try {
       const payload = JSON.parse(raw) as {
