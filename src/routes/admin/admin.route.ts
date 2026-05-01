@@ -884,7 +884,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         createdById: request.user.id,
       });
 
-      await CacheInvalidator.onEpisodeChange(episode.anime.slug);
+      await CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug);
     }
 
     return created(reply, { data: server });

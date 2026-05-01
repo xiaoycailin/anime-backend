@@ -6,6 +6,7 @@ const BASE_PREFIX_SERVER_PATH = "/api/video-stream/okru-stream";
 
 const OKRU_EMBED_BASE = "https://ok.ru/videoembed";
 const OKRU_REFERER = "https://ok.ru";
+const SBCHILL_HOST = "sbchill.com";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ interface OkruVideo {
 interface OkruMetadata {
   hlsManifestUrl?: string;
   videos: OkruVideo[];
+  referer?: string;
 }
 
 // ─── Encode/Decode URL token ──────────────────────────────────────────────────
@@ -39,6 +41,7 @@ function rewriteM3u8(
   content: string,
   baseProxyUrl: string,
   manifestUrl: string,
+  referer?: string,
 ): string {
   const manifestUrlObj = new URL(manifestUrl);
   const lastSlash = manifestUrlObj.pathname.lastIndexOf("/");
@@ -60,7 +63,9 @@ function rewriteM3u8(
   function proxyUrl(raw: string): string {
     const absolute = resolveUrl(raw);
     const token = encodeSegmentUrl(absolute);
-    return `${baseProxyUrl}/segment?t=${token}`;
+    const params = new URLSearchParams({ t: token });
+    if (referer) params.set("r", referer);
+    return `${baseProxyUrl}/segment?${params.toString()}`;
   }
 
   function rewriteUriAttrs(line: string): string {
@@ -148,7 +153,48 @@ async function fetchOkruMetadata(videoId: string): Promise<OkruMetadata> {
     throw new Error("videos array not found in metadata");
   }
 
-  return metadata;
+  return { ...metadata, referer: OKRU_REFERER };
+}
+
+async function fetchSbchillMetadata(videoId: string): Promise<OkruMetadata> {
+  const embedUrl = `https://${SBCHILL_HOST}/e/${videoId}.html`;
+  const referer = `https://${SBCHILL_HOST}/`;
+
+  const res = await fetch(embedUrl, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "Chrome/124.0 Safari/537.36",
+      Referer: referer,
+      Origin: `https://${SBCHILL_HOST}`,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`sbchill returned ${res.status} for videoId ${videoId}`);
+  }
+
+  const html = await res.text();
+  const m3u8Match =
+    html.match(/(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/) ??
+    html.match(/file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/);
+
+  if (!m3u8Match) {
+    throw new Error(
+      `M3U8 URL not found in sbchill.com embed page for videoId ${videoId}`,
+    );
+  }
+
+  return { hlsManifestUrl: m3u8Match[1], videos: [], referer };
+}
+
+function fetchEmbedMetadata(videoId: string, host?: string) {
+  return host === SBCHILL_HOST
+    ? fetchSbchillMetadata(videoId)
+    : fetchOkruMetadata(videoId);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -180,14 +226,15 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
    *   yang akan return pseudo HLS media playlist wrapping 1 MP4 segment.
    *   (HLS.js butuh sub-playlist M3U8, bukan URL MP4 langsung)
    */
-  app.get<{ Params: { videoId: string } }>(
+  app.get<{ Params: { videoId: string }; Querystring: { host?: string } }>(
     "/playlist/:videoId",
     async (req, reply) => {
       const { videoId } = req.params;
+      const host = req.query.host?.trim().toLowerCase();
 
       let metadata: OkruMetadata;
       try {
-        metadata = await fetchOkruMetadata(videoId);
+        metadata = await fetchEmbedMetadata(videoId, host);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         return reply.status(502).send({ error: message });
@@ -203,7 +250,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
             "User-Agent":
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
               "Chrome/124.0 Safari/537.36",
-            Referer: OKRU_REFERER,
+            Referer: metadata.referer ?? OKRU_REFERER,
           },
         });
 
@@ -218,6 +265,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
           m3u8Text,
           baseUrl,
           metadata.hlsManifestUrl,
+          metadata.referer,
         );
 
         return reply
@@ -333,7 +381,9 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
    * Jika response adalah M3U8 → rewrite URL di dalamnya.
    * Jika binary (.ts) → stream langsung.
    */
-  app.get<{ Querystring: { t: string } }>("/segment", async (req, reply) => {
+  app.get<{ Querystring: { t: string; r?: string } }>(
+    "/segment",
+    async (req, reply) => {
     const { t } = req.query;
     if (!t) {
       return reply.status(400).send({ error: "Missing token" });
@@ -352,7 +402,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
           "Chrome/124.0 Safari/537.36",
-        Referer: OKRU_REFERER,
+        Referer: req.query.r ?? OKRU_REFERER,
       },
     });
 
@@ -383,7 +433,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
 
       // const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
-      const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
+      const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl, req.query.r);
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")

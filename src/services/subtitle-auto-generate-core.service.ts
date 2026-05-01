@@ -258,6 +258,10 @@ function extractRubyId(url: string) {
   return url.match(/rubyvidhub\.com\/embed-([^.]+)\.html/)?.[1] ?? null;
 }
 
+function extractSbchillId(url: string) {
+  return url.match(/sbchill\.com\/e\/([^.\/?#]+)(?:\.html)?/)?.[1] ?? null;
+}
+
 function resolveStreamUrl(serverUrl: string, baseUrl: string) {
   if (isHttpUrl(serverUrl) && isDirectMediaUrl(serverUrl)) return serverUrl;
 
@@ -279,6 +283,12 @@ function resolveStreamUrl(serverUrl: string, baseUrl: string) {
   if (serverUrl.includes("rubyvidhub.com")) {
     const id = extractRubyId(serverUrl);
     if (id) return `${baseUrl}/api/video-stream/ruby-stream/playlist/${id}`;
+  }
+
+  if (serverUrl.includes("sbchill.com")) {
+    const id = extractSbchillId(serverUrl);
+    if (id)
+      return `${baseUrl}/api/video-stream/okru-stream/playlist/${id}?host=sbchill.com`;
   }
 
   return null;
