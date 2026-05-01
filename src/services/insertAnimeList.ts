@@ -47,28 +47,10 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
 
   // ─── TRANSACTION: semua atau tidak sama sekali ────────────────────────────
   await prisma.$transaction(async (tx) => {
-    // ─── UPSERT ANIME ────────────────────────────────────────────────────────
+    // ─── INSERT-ONLY ANIME ───────────────────────────────────────────────────
     const saved = await tx.anime.upsert({
       where: { slug },
-      update: {
-        title: anime.title,
-        thumbnail: anime.thumbnail,
-        bigCover: anime.bigCover,
-        rating: anime.rating ? parseFloat(anime.rating) : null,
-        alternativeTitles: anime.alternativeTitles,
-        synopsis: anime.synopsis,
-        followed: anime.followed ? parseInt(anime.followed) : null,
-        status: metadata.status,
-        network: metadata.network,
-        studio: metadata.studio,
-        released: metadata.released,
-        duration: metadata.duration,
-        season: metadata.season,
-        country: metadata.country,
-        type: metadata.type,
-        totalEpisodes: metadata.episodes ? parseInt(metadata.episodes) : null,
-        fansub: metadata.fansub,
-      },
+      update: {},
       create: {
         slug,
         title: anime.title,
@@ -102,7 +84,6 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
       ),
     );
 
-    await tx.animeGenre.deleteMany({ where: { animeId: saved.id } });
     await tx.animeGenre.createMany({
       data: genres.map((g) => ({ animeId: saved.id, genreId: g.id })),
       skipDuplicates: true,
@@ -116,13 +97,12 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
           : toAnimeSlug(tag.label);
         return tx.tag.upsert({
           where: { slug: tagSlug },
-          update: { label: tag.label },
+          update: {},
           create: { slug: tagSlug, label: tag.label },
         });
       }),
     );
 
-    await tx.animeTag.deleteMany({ where: { animeId: saved.id } });
     await tx.animeTag.createMany({
       data: tags.map((t) => ({ animeId: saved.id, tagId: t.id })),
       skipDuplicates: true,
@@ -133,7 +113,7 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
       extraMetadata.map(([key, value]) =>
         tx.animeMetaExtra.upsert({
           where: { animeId_key: { animeId: saved.id, key } },
-          update: { value: value ?? "" },
+          update: {},
           create: { animeId: saved.id, key, value: value ?? "" },
         }),
       ),
@@ -147,15 +127,15 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
           : `${slug}-ep-${ep.number}`;
         const epNumber = parseInt(ep.number) || 0;
 
-        const savedEp = await tx.episode.upsert({
+        const existingEpisode = await tx.episode.findUnique({
           where: { slug: epSlug },
-          update: {
-            title: ep.title,
-            sub: ep.sub,
-            date: ep.date,
-            number: epNumber,
-          },
-          create: {
+          select: { id: true },
+        });
+
+        if (existingEpisode) return;
+
+        const savedEp = await tx.episode.create({
+          data: {
             animeId: saved.id,
             slug: epSlug,
             number: epNumber,
@@ -165,9 +145,8 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
           },
         });
 
-        // ─── SERVERS ──────────────────────────────────────────────────────────
+        // ─── INSERT-ONLY SERVERS ──────────────────────────────────────────────
         if (ep.servers?.length) {
-          await tx.server.deleteMany({ where: { episodeId: savedEp.id } });
           await tx.server.createMany({
             data: ep.servers.map((s) => ({
               episodeId: savedEp.id,
