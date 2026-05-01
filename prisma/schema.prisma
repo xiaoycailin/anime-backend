@@ -689,6 +689,7 @@ model CommentReport {
 model EpisodeReport {
   id           Int                 @id @default(autoincrement())
   reporterId   Int?
+  deviceId     String?             @db.VarChar(191)
   episodeId    Int
   reason       EpisodeReportReason
   description  String?             @db.Text
@@ -706,6 +707,7 @@ model EpisodeReport {
 
   @@index([episodeId, status, createdAt(sort: Desc)])
   @@index([reporterId, episodeId, status])
+  @@index([deviceId, episodeId, status])
   @@index([status, createdAt(sort: Desc)])
   @@map("episode_reports")
 }

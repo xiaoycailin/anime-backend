@@ -790,6 +790,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
       contact?: string;
       pageUrl?: string;
       serverLabel?: string;
+      deviceId?: string;
     };
     const episodeId = Number(params.episodeId);
 
@@ -850,10 +851,14 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
     const serverLabel = body.serverLabel
       ? String(body.serverLabel).trim().slice(0, 120)
       : "";
+    const deviceId = body.deviceId
+      ? String(body.deviceId).trim().slice(0, 191)
+      : "";
 
     const report = await prisma.episodeReport.create({
       data: {
         reporterId,
+        deviceId: deviceId || null,
         episodeId,
         reason: body.reason as (typeof VALID_REPORT_REASONS)[number],
         description: description || null,

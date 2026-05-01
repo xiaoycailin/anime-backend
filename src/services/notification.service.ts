@@ -40,6 +40,9 @@ type BroadcastNotificationInput = Omit<NotificationInput, "scope">;
 type UserNotificationInput = Omit<NotificationInput, "scope"> & {
   userId: number;
 };
+type DevicePushNotificationInput = Omit<NotificationInput, "scope"> & {
+  deviceId: string;
+};
 type RoleNotificationInput = Omit<NotificationInput, "scope"> & {
   role: string;
 };
@@ -367,6 +370,38 @@ export async function createUserNotification(input: UserNotificationInput) {
   const subscriptions = await prisma.pushSubscription.findMany({
     where: {
       userId: input.userId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      endpoint: true,
+      p256dh: true,
+      auth: true,
+      topics: true,
+    },
+  });
+
+  await sendPush(
+    subscriptions.filter((subscription) =>
+      canSubscriptionReceiveCategory(input.category, subscription.topics),
+    ),
+    pushPayload(notification),
+  );
+
+  return notification;
+}
+
+export async function createDevicePushNotification(
+  input: DevicePushNotificationInput,
+) {
+  const notification = await createNotificationRecord({
+    ...input,
+    scope: "user",
+  });
+
+  const subscriptions = await prisma.pushSubscription.findMany({
+    where: {
+      deviceId: input.deviceId,
       isActive: true,
     },
     select: {

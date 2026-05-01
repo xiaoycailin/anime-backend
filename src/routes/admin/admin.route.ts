@@ -14,8 +14,10 @@ import {
 } from "../../services/subtitle.service";
 import {
   createBroadcastNotification,
+  createDevicePushNotification,
   createRoleNotification,
   createSegmentNotification,
+  createUserNotification,
 } from "../../services/notification.service";
 import { markEpisodeReleasedAndNotifyOnce } from "../../services/release-schedule.service";
 import { calculateLevel } from "../../services/exp.service";
@@ -1881,7 +1883,29 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     const report = await prisma.episodeReport.findUnique({
       where: { id: reportId },
-      select: { id: true },
+      select: {
+        id: true,
+        status: true,
+        reporterId: true,
+        deviceId: true,
+        reason: true,
+        episode: {
+          select: {
+            id: true,
+            number: true,
+            title: true,
+            slug: true,
+            anime: {
+              select: {
+                id: true,
+                title: true,
+                slug: true,
+                thumbnail: true,
+              },
+            },
+          },
+        },
+      },
     });
     if (!report)
       return reply.code(404).send({ error: "Laporan tidak ditemukan" });
@@ -1896,6 +1920,39 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         resolvedById: adminId,
       },
     });
+
+    if (status === "resolved" && report.status !== "resolved") {
+      const link = `/anime/${report.episode.anime.slug}/${report.episode.slug}`;
+      const episodeLabel = `${report.episode.anime.title} Ep ${report.episode.number}`;
+      const notification = {
+        category: "account_system" as const,
+        type: "episode_report_resolved",
+        title: "Laporan episode sudah selesai",
+        message: `Admin sudah menyelesaikan laporan untuk ${episodeLabel}. Terima kasih sudah bantu melapor.`,
+        link,
+        image: report.episode.anime.thumbnail,
+        payload: {
+          reportId: report.id,
+          episodeId: report.episode.id,
+          animeId: report.episode.anime.id,
+          animeSlug: report.episode.anime.slug,
+          episodeSlug: report.episode.slug,
+          reason: report.reason,
+        },
+        createdById: adminId,
+      };
+
+      const notify = report.reporterId
+        ? createUserNotification({ ...notification, userId: report.reporterId })
+        : report.deviceId
+          ? createDevicePushNotification({
+              ...notification,
+              deviceId: report.deviceId,
+            })
+          : Promise.resolve(null);
+
+      await notify.catch((error) => request.log.error(error));
+    }
 
     return ok(reply, { data: null, message: `Laporan episode ${status}` });
   });
