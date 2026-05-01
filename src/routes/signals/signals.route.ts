@@ -44,6 +44,19 @@ type AnalyzeBody = {
   urls?: string[];
 };
 
+type PlaylistAnalysis = {
+  url: string;
+  resolution: number | null;
+  hintedResolution: number | null;
+  bandwidth: number | null;
+  sampleSizeBytes: number | null;
+  sampleDurationSeconds: number | null;
+  sampleSegmentUrl: string | null;
+  sampleCount: number;
+  detectedFrom: string;
+  error?: string;
+};
+
 type SubtitleLanguage = {
   code: string;
   label: string;
@@ -167,6 +180,15 @@ function inferResolutionFromUrl(url: string): number | null {
   return wetvMap[tail] ?? null;
 }
 
+function resolutionLadder(count: number) {
+  if (count >= 6) return [144, 240, 360, 480, 720, 1080].slice(-count);
+  if (count === 5) return [144, 360, 480, 720, 1080];
+  if (count === 4) return [360, 480, 720, 1080];
+  if (count === 3) return [480, 720, 1080];
+  if (count === 2) return [720, 1080];
+  return [1080];
+}
+
 async function fetchText(url: string, timeoutMs = 10000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -218,26 +240,31 @@ async function fetchContentLength(url: string, timeoutMs = 10000) {
   }
 }
 
-async function analyzePlaylist(url: string) {
+async function analyzePlaylist(url: string): Promise<PlaylistAnalysis> {
   const safeUrl = assertHttpUrl(url);
   const text = await fetchText(safeUrl);
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const hintedResolution = inferResolutionFromUrl(safeUrl);
   let bandwidth: number | null = null;
-  let resolution = inferResolutionFromUrl(safeUrl);
-  let firstSegmentUrl: string | null = null;
-  let firstSegmentDuration: number | null = null;
+  let resolution: number | null = null;
+  const samples: Array<{ url: string; duration: number | null }> = [];
   let pendingDuration: number | null = null;
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line.startsWith("#EXT-X-STREAM-INF")) {
       const parsedBandwidth = Number(parseAttribute(line, "BANDWIDTH"));
       if (Number.isFinite(parsedBandwidth)) bandwidth = parsedBandwidth;
       const res = parseAttribute(line, "RESOLUTION");
       const height = res?.match(/x(\d+)/i)?.[1];
       if (height && Number.isFinite(Number(height))) resolution = Number(height);
+      const variantUrl = lines[index + 1];
+      if (variantUrl && !variantUrl.startsWith("#")) {
+        samples.push({ url: resolvePlaylistUrl(safeUrl, variantUrl), duration: null });
+      }
       continue;
     }
     if (line.startsWith("#EXTINF")) {
@@ -246,27 +273,56 @@ async function analyzePlaylist(url: string) {
       continue;
     }
     if (!line.startsWith("#")) {
-      firstSegmentUrl = resolvePlaylistUrl(safeUrl, line);
-      firstSegmentDuration = pendingDuration;
-      break;
+      samples.push({ url: resolvePlaylistUrl(safeUrl, line), duration: pendingDuration });
+      pendingDuration = null;
+      if (samples.length >= 3) break;
     }
   }
 
-  const sampleSizeBytes = firstSegmentUrl ? await fetchContentLength(firstSegmentUrl) : null;
+  const measuredSamples = await Promise.all(
+    samples.slice(0, 3).map(async (sample) => ({
+      ...sample,
+      size: await fetchContentLength(sample.url),
+    })),
+  );
+  const validSamples = measuredSamples.filter((sample) => sample.size && sample.duration);
+  const sampleSizeBytes = validSamples.reduce((sum, sample) => sum + Number(sample.size), 0) || null;
+  const sampleDurationSeconds = validSamples.reduce((sum, sample) => sum + Number(sample.duration), 0) || null;
   const estimatedBandwidth =
-    sampleSizeBytes && firstSegmentDuration
-      ? Math.round((sampleSizeBytes * 8) / firstSegmentDuration)
+    sampleSizeBytes && sampleDurationSeconds
+      ? Math.round((sampleSizeBytes * 8) / sampleDurationSeconds)
       : null;
 
   return {
     url: safeUrl,
     resolution,
+    hintedResolution,
     bandwidth: bandwidth ?? estimatedBandwidth,
     sampleSizeBytes,
-    sampleDurationSeconds: firstSegmentDuration,
-    sampleSegmentUrl: firstSegmentUrl,
-    detectedFrom: bandwidth ? "playlist" : estimatedBandwidth ? "sample-segment" : "url-pattern",
+    sampleDurationSeconds,
+    sampleSegmentUrl: samples[0]?.url ?? null,
+    sampleCount: validSamples.length,
+    detectedFrom: resolution ? "playlist-resolution" : bandwidth ? "playlist-bandwidth" : estimatedBandwidth ? "sample-segments" : "url-pattern",
   };
+}
+
+function applyRankedResolutions(results: PlaylistAnalysis[]) {
+  const unresolved = results
+    .filter((item) => !item.resolution && item.bandwidth)
+    .sort((a, b) => Number(a.bandwidth) - Number(b.bandwidth));
+  const ladder = resolutionLadder(unresolved.length);
+  unresolved.forEach((item, index) => {
+    item.resolution = ladder[index] ?? item.hintedResolution ?? null;
+    item.detectedFrom = "ranked-segments";
+  });
+
+  for (const item of results) {
+    if (!item.resolution && item.hintedResolution) {
+      item.resolution = item.hintedResolution;
+      item.detectedFrom = "url-pattern";
+    }
+  }
+  return results;
 }
 
 function stripSubtitleText(text: string) {
@@ -409,9 +465,11 @@ export const signalsRoutes: FastifyPluginAsync = async (app) => {
             url,
             resolution: inferResolutionFromUrl(url),
             bandwidth: null,
+            hintedResolution: inferResolutionFromUrl(url),
             sampleSizeBytes: null,
             sampleDurationSeconds: null,
             sampleSegmentUrl: null,
+            sampleCount: 0,
             detectedFrom: "url-pattern",
             error: error instanceof Error ? error.message : "Gagal analyze playlist",
           };
@@ -421,7 +479,7 @@ export const signalsRoutes: FastifyPluginAsync = async (app) => {
 
     return ok(reply, {
       message: "Signals analyzed",
-      data: results,
+      data: applyRankedResolutions(results),
     });
   });
 
