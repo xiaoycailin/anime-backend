@@ -544,9 +544,9 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
           ? rawSubtitle.sourceUrl.trim()
           : "";
 
-      if (!language && !label && !sourceUrl) continue;
-      if (!language || !sourceUrl) {
-        throw badRequest("Subtitle wajib punya language dan sourceUrl");
+      if (!sourceUrl) continue;
+      if (!language) {
+        throw badRequest("Subtitle yang punya URL wajib punya language");
       }
       if (!/^https?:\/\//i.test(sourceUrl)) {
         throw badRequest(`URL subtitle ${language} tidak valid`);
