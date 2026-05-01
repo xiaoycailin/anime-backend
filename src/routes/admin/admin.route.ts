@@ -66,8 +66,8 @@ type AnimeBody = {
   season?: string | null;
   country?: string | null;
   rating?: number | null;
-  skipIntroSeconds?: number | null;
-  skipOutroSeconds?: number | null;
+  skipIntroSeconds?: number | string | null;
+  skipOutroSeconds?: number | string | null;
 };
 
 type EpisodeBody = {
@@ -78,8 +78,8 @@ type EpisodeBody = {
   sub?: string | null;
   date?: string | null;
   status?: string | null;
-  skipIntroSeconds?: number | null;
-  skipOutroSeconds?: number | null;
+  skipIntroSeconds?: number | string | null;
+  skipOutroSeconds?: number | string | null;
   scheduledReleaseAt?: string | Date | null;
 };
 
@@ -236,8 +236,26 @@ function cleanAnimeData(body: AnimeBody) {
   };
 }
 
-function cleanOptionalSeconds(value: number | null | undefined) {
+function cleanOptionalSeconds(value: number | string | null | undefined) {
   if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    if (trimmed.includes(":")) {
+      const parts = trimmed.split(":").map((part) => part.trim());
+      if (parts.length < 2 || parts.length > 3) return null;
+      if (parts.some((part) => !/^\d+$/.test(part))) return null;
+
+      const numbers = parts.map(Number);
+      const seconds =
+        parts.length === 3
+          ? numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+          : numbers[0] * 60 + numbers[1];
+      return Number.isFinite(seconds) ? Math.max(0, seconds) : null;
+    }
+  }
+
   const seconds = Math.max(0, Number(value));
   return Number.isFinite(seconds) ? seconds : null;
 }

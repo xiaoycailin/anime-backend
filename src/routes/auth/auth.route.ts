@@ -33,6 +33,7 @@ import {
   getProfileStats,
   type ProfileStatsDTO,
 } from "../../services/user-profile.service";
+import { deleteR2Object, uploadBufferToR2 } from "../../utils/r2";
 import { badRequest, conflict, unauthorized } from "../../utils/http-error";
 import { created, ok } from "../../utils/response";
 
@@ -45,7 +46,6 @@ type AuthBody = {
 type ProfileBody = {
   username?: string;
   fullName?: string;
-  avatar?: string | null;
 };
 
 type PasswordBody = {
@@ -89,6 +89,14 @@ type LoginSessionUser = {
 };
 
 const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const AVATAR_PREFIX = "users/content/avatars/";
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
+const ALLOWED_AVATAR_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/svg+xml",
+  "image/gif",
+]);
 
 function publicUser(
   user: {
@@ -160,6 +168,42 @@ function requirePassword(password?: string) {
   const value = password ?? "";
   if (value.length < 6) throw badRequest("Password minimal 6 karakter");
   return value;
+}
+
+function normalizeAvatarMimeType(value: string | undefined | null) {
+  return value?.split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function validateAvatarFile(file: {
+  mimetype?: string;
+  filename?: string;
+}) {
+  const contentType = normalizeAvatarMimeType(file.mimetype);
+  if (!ALLOWED_AVATAR_MIME_TYPES.has(contentType)) {
+    throw badRequest("Avatar harus PNG, JPG, JPEG, SVG, atau GIF");
+  }
+
+  return {
+    contentType,
+    filename: file.filename?.trim() || "avatar",
+  };
+}
+
+function avatarKeyFromUrl(url: string | null | undefined) {
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    const pathname = decodeURIComponent(parsed.pathname).replace(/^\/+/, "");
+    const markerIndex = pathname.indexOf(AVATAR_PREFIX);
+    if (markerIndex < 0) return null;
+
+    const key = pathname.slice(markerIndex).replace(/^\/+/, "");
+    if (!key.startsWith(AVATAR_PREFIX) || key.includes("..")) return null;
+    return key;
+  } catch {
+    return null;
+  }
 }
 
 function googleConfig() {
@@ -540,7 +584,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.put("/me", { preHandler: app.authenticate }, async (request, reply) => {
     const body = request.body as ProfileBody;
-    const data: { fullName?: string; avatar?: string | null } = {};
+    const data: { fullName?: string } = {};
 
     if (typeof body.username === "string" && body.username.trim()) {
       data.fullName = normalizeFullName(body.username);
@@ -548,10 +592,6 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
     if (typeof body.fullName === "string" && body.fullName.trim()) {
       data.fullName = normalizeFullName(body.fullName);
-    }
-
-    if (typeof body.avatar === "string" || body.avatar === null) {
-      data.avatar = body.avatar;
     }
 
     try {
@@ -593,6 +633,98 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       throw badRequest("Gagal memperbarui profile", error);
     }
   });
+
+  app.post(
+    "/me/avatar",
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      if (!request.isMultipart()) {
+        throw badRequest("Content-Type harus multipart/form-data");
+      }
+
+      const currentUser = await prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { avatar: true },
+      });
+
+      if (!currentUser) throw unauthorized("User tidak ditemukan");
+
+      const file = await request.file();
+      if (!file) throw badRequest("File avatar wajib diupload");
+
+      const { contentType, filename } = validateAvatarFile(file);
+      const buffer = await file.toBuffer();
+
+      if (buffer.length > MAX_AVATAR_BYTES) {
+        throw badRequest("Ukuran avatar maksimal 5MB");
+      }
+
+      const oldAvatarKey = avatarKeyFromUrl(currentUser.avatar);
+      const uploaded = await uploadBufferToR2({
+        buffer,
+        filename,
+        contentType,
+        folder: AVATAR_PREFIX.replace(/\/+$/, ""),
+        metadata: {
+          userId: String(request.user.id),
+          kind: "user-avatar",
+        },
+      });
+
+      let user;
+      try {
+        user = await prisma.user.update({
+          where: { id: request.user.id },
+          data: { avatar: uploaded.url },
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            fullName: true,
+            avatar: true,
+            role: true,
+            isVerified: true,
+            createdAt: true,
+            exp: true,
+            level: true,
+            lastExpGainAt: true,
+          },
+        });
+      } catch (error) {
+        await deleteR2Object(uploaded.key).catch((deleteError) => {
+          app.log.warn(
+            { err: deleteError, key: uploaded.key },
+            "Failed to cleanup uploaded avatar after profile update error",
+          );
+        });
+        throw error;
+      }
+
+      await Promise.all([
+        CacheInvalidator.onPublicUserChange(user.id),
+        invalidateChatUserSnapshot(user.id),
+      ]);
+
+      if (oldAvatarKey && oldAvatarKey !== uploaded.key) {
+        await deleteR2Object(oldAvatarKey).catch((error) => {
+          app.log.warn(
+            { err: error, key: oldAvatarKey },
+            "Failed to delete previous user avatar",
+          );
+        });
+      }
+
+      const [equipped, profileStats] = await Promise.all([
+        getEquippedDecorations(user.id),
+        getProfileStats(user.id),
+      ]);
+
+      return ok(reply, {
+        message: "Avatar updated",
+        data: publicUser(user, { ...equipped, profileStats }),
+      });
+    },
+  );
 
   app.put(
     "/password",
