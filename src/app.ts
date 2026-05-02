@@ -44,7 +44,7 @@ export function buildApp() {
     origin: true,
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-guest-watch-id"],
   });
 
   app.register(multipart, {

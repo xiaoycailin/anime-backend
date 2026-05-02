@@ -204,6 +204,21 @@ model WatchHistory {
   @@index([userId, watchedAt(sort: Desc)])
 }
 
+model GuestWatchAccess {
+  id            Int      @id @default(autoincrement())
+  guestId       String   @map("guest_id") @db.VarChar(64)
+  animeId       Int      @map("anime_id")
+  episodeId     Int      @map("episode_id")
+  episodeNumber Int      @map("episode_number")
+  watchedAt     DateTime @default(now()) @map("watched_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([guestId, episodeId])
+  @@index([guestId, animeId, watchedAt(sort: Desc)])
+  @@index([animeId, episodeNumber])
+  @@map("guest_watch_access")
+}
+
 model SavedAnime {
   id             Int      @id @default(autoincrement())
   userId         Int

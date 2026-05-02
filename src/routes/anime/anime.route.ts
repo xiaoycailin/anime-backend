@@ -5,6 +5,12 @@ import {
   queueTrendingScoreRecalculation,
   recalculateTrendingScore,
 } from "../../services/trending.service";
+import {
+  checkGuestWatchLimit,
+  getGuestWatchQuota,
+  getOrSetGuestWatchId,
+  optionalAuthUserId,
+} from "../../services/guest-watch-limit.service";
 import { ok, paginated, sendError } from "../../utils/response";
 import {
   extractBaseTitle,
@@ -40,6 +46,32 @@ function toArray(value: string | undefined) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+type EpisodeAccessInput = {
+  id: number;
+  number: number;
+  anime: { id: number };
+};
+
+function episodeAccessInput(payload: unknown): EpisodeAccessInput | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const data = payload as Record<string, unknown>;
+  const anime = data.anime as Record<string, unknown> | undefined;
+  const id = Number(data.id);
+  const number = Number(data.number);
+  const animeId = Number(anime?.id);
+
+  if (!Number.isFinite(id) || !Number.isFinite(number) || !Number.isFinite(animeId)) {
+    return null;
+  }
+
+  return {
+    id,
+    number,
+    anime: { id: animeId },
+  };
 }
 
 function hasSubtitleTrackCues(payload: Record<string, unknown>) {
@@ -394,6 +426,31 @@ async function buildEpisodeSeasons(current: {
 }
 
 export const animeRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{
+    Querystring: { animeSlug?: string };
+  }>("/debug/guest-watch", async (request, reply) => {
+    const animeSlug = request.query.animeSlug?.trim();
+    const guestId = getOrSetGuestWatchId(request, reply);
+
+    if (!animeSlug) {
+      return ok(reply, {
+        message: "Tambahkan query animeSlug untuk cek kuota anime.",
+        data: { guestId },
+      });
+    }
+
+    const quota = await getGuestWatchQuota({ guestId, animeSlug });
+    if (!quota) {
+      return sendError(reply, {
+        status: 404,
+        message: "Anime tidak ditemukan",
+        errorCode: "ANIME_NOT_FOUND",
+      });
+    }
+
+    return ok(reply, { data: quota });
+  });
+
   app.get("/", async (request, reply) => {
     const query = request.query as {
       q?: string;
@@ -1494,6 +1551,33 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       const cached = await getCache<Record<string, unknown>>(cacheKey);
       if (cached) {
         const publicData = stripPublicSubtitleTrackCues(cached);
+        const accessEpisode = episodeAccessInput(publicData);
+
+        if (accessEpisode) {
+          const userId = await optionalAuthUserId(app, request);
+
+          if (!userId) {
+            const guestId = getOrSetGuestWatchId(request, reply);
+            const guestWatch = await checkGuestWatchLimit({
+              guestId,
+              episode: {
+                id: accessEpisode.id,
+                animeId: accessEpisode.anime.id,
+                number: accessEpisode.number,
+              },
+            });
+
+            if (!guestWatch.allowed) {
+              return sendError(reply, {
+                status: 403,
+                message: "Masuk untuk lanjut menonton episode terbaru",
+                errorCode: "LOGIN_REQUIRED",
+                data: { guestWatch },
+              });
+            }
+          }
+        }
+
         if (hasSubtitleTrackCues(cached)) {
           await setCache(cacheKey, publicData, CACHE_TTL.EPISODE_DETAIL);
         }
@@ -1602,6 +1686,30 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           message: "Episode not found",
           errorCode: "EPISODE_NOT_FOUND",
         });
+      }
+
+      const userId = await optionalAuthUserId(app, request);
+      let guestWatch: Awaited<ReturnType<typeof checkGuestWatchLimit>> | null = null;
+
+      if (!userId) {
+        const guestId = getOrSetGuestWatchId(request, reply);
+        guestWatch = await checkGuestWatchLimit({
+          guestId,
+          episode: {
+            id: episode.id,
+            animeId: episode.anime.id,
+            number: episode.number,
+          },
+        });
+
+        if (!guestWatch.allowed) {
+          return sendError(reply, {
+            status: 403,
+            message: "Masuk untuk lanjut menonton episode terbaru",
+            errorCode: "LOGIN_REQUIRED",
+            data: { guestWatch },
+          });
+        }
       }
 
       const currentGenres = episode.anime.genres.map((item) => item.genre.name);
