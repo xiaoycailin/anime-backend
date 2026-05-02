@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import { probeHlsSegmentDimensions } from "../../services/hls-probe.service";
 import { badRequest } from "../../utils/http-error";
 import { created, ok } from "../../utils/response";
 
@@ -53,6 +54,9 @@ type PlaylistAnalysis = {
   sampleDurationSeconds: number | null;
   sampleSegmentUrl: string | null;
   sampleCount: number;
+  probedResolution: number | null;
+  probedWidth: number | null;
+  probedHeight: number | null;
   detectedFrom: string;
   error?: string;
 };
@@ -189,6 +193,16 @@ function resolutionLadder(count: number) {
   return [1080];
 }
 
+function snapProbeResolution(width: number, height: number) {
+  if (width >= 3600 || height >= 1600) return 2160;
+  if (width >= 1600 || height >= 800) return 1080;
+  if (width >= 1100 || height >= 600) return 720;
+  if (width >= 720 || height >= 400) return 480;
+  if (width >= 540 || height >= 300) return 360;
+  if (width >= 360 || height >= 200) return 240;
+  return 144;
+}
+
 async function fetchText(url: string, timeoutMs = 10000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -288,6 +302,8 @@ async function analyzePlaylist(url: string): Promise<PlaylistAnalysis> {
   const validSamples = measuredSamples.filter((sample) => sample.size && sample.duration);
   const sampleSizeBytes = validSamples.reduce((sum, sample) => sum + Number(sample.size), 0) || null;
   const sampleDurationSeconds = validSamples.reduce((sum, sample) => sum + Number(sample.duration), 0) || null;
+  const probedVideo = samples[0]?.url ? await probeHlsSegmentDimensions(samples[0].url) : null;
+  const snappedProbeResolution = probedVideo ? snapProbeResolution(probedVideo.width, probedVideo.height) : null;
   const estimatedBandwidth =
     sampleSizeBytes && sampleDurationSeconds
       ? Math.round((sampleSizeBytes * 8) / sampleDurationSeconds)
@@ -295,14 +311,17 @@ async function analyzePlaylist(url: string): Promise<PlaylistAnalysis> {
 
   return {
     url: safeUrl,
-    resolution,
+    resolution: snappedProbeResolution ?? resolution,
     hintedResolution,
     bandwidth: bandwidth ?? estimatedBandwidth,
     sampleSizeBytes,
     sampleDurationSeconds,
     sampleSegmentUrl: samples[0]?.url ?? null,
     sampleCount: validSamples.length,
-    detectedFrom: resolution ? "playlist-resolution" : bandwidth ? "playlist-bandwidth" : estimatedBandwidth ? "sample-segments" : "url-pattern",
+    probedResolution: snappedProbeResolution,
+    probedWidth: probedVideo?.width ?? null,
+    probedHeight: probedVideo?.height ?? null,
+    detectedFrom: probedVideo ? "segment-probe" : resolution ? "playlist-resolution" : bandwidth ? "playlist-bandwidth" : estimatedBandwidth ? "sample-segments" : "url-pattern",
   };
 }
 
@@ -470,6 +489,9 @@ export const signalsRoutes: FastifyPluginAsync = async (app) => {
             sampleDurationSeconds: null,
             sampleSegmentUrl: null,
             sampleCount: 0,
+            probedResolution: null,
+            probedWidth: null,
+            probedHeight: null,
             detectedFrom: "url-pattern",
             error: error instanceof Error ? error.message : "Gagal analyze playlist",
           };
