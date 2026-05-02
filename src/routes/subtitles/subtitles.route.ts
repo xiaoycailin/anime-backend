@@ -16,8 +16,12 @@ import {
   saveSubtitleCues,
   subtitleFilePath,
 } from "../../services/subtitle.service";
+import { CACHE_KEYS, CACHE_TTL, getCache, setCache } from "../../lib/cache";
 import { badRequest, notFound } from "../../utils/http-error";
 import { created, ok, sendResponse } from "../../utils/response";
+
+const SUBTITLE_PUBLIC_CACHE_CONTROL =
+  "public, max-age=3600, s-maxage=3600, stale-while-revalidate=3600";
 
 type MultipartPayload = {
   body: Record<string, string>;
@@ -91,6 +95,7 @@ export const subtitlesRoutes: FastifyPluginAsync = async (app) => {
     const id = Number(episodeId);
     if (!Number.isInteger(id) || id <= 0)
       throw badRequest("episodeId tidak valid");
+    reply.header("Cache-Control", SUBTITLE_PUBLIC_CACHE_CONTROL);
     return ok(reply, { data: await listSubtitles(id) });
   });
 
@@ -103,7 +108,7 @@ export const subtitlesRoutes: FastifyPluginAsync = async (app) => {
 
     return reply
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "public, max-age=31536000, immutable")
+      .header("Cache-Control", SUBTITLE_PUBLIC_CACHE_CONTROL)
       .type("text/vtt; charset=utf-8")
       .send(fs.createReadStream(filePath));
   });
@@ -115,15 +120,30 @@ export const subtitlesRoutes: FastifyPluginAsync = async (app) => {
       langVtt: string;
     };
     const language = langVtt.replace(/\.vtt$/i, "");
-    const content = await exportSubtitleTrackVttByServerId(
-      Number(episodeId),
-      Number(serverId),
+    const numericEpisodeId = Number(episodeId);
+    const numericServerId = Number(serverId);
+    const cacheKey = CACHE_KEYS.subtitleVtt(
+      numericEpisodeId,
+      numericServerId,
       language,
     );
+    const cached = await getCache<string>(cacheKey);
+    const content =
+      cached ??
+      (await exportSubtitleTrackVttByServerId(
+        numericEpisodeId,
+        numericServerId,
+        language,
+      ));
+
+    if (!cached) {
+      await setCache(cacheKey, content, CACHE_TTL.SUBTITLES);
+    }
 
     return reply
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-store")
+      .header("Cache-Control", SUBTITLE_PUBLIC_CACHE_CONTROL)
+      .header("X-Subtitle-Cache", cached ? "hit" : "miss")
       .type("text/vtt; charset=utf-8")
       .send(content);
   });
@@ -146,6 +166,7 @@ export const subtitlesRoutes: FastifyPluginAsync = async (app) => {
       Number(episodeId),
       decodeURIComponent(serverUrl),
     );
+    reply.header("Cache-Control", SUBTITLE_PUBLIC_CACHE_CONTROL);
     return ok(reply, { data: { tracks } });
   });
 

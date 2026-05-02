@@ -1,5 +1,11 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -303,6 +309,17 @@ export const wetvProxyRoutes: FastifyPluginAsync = async (app) => {
 
     const port = req.port ? `:${req.port}` : "";
     const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+    const cacheParts = [baseUrl, info.m3u8Url];
+    const cached = await readVideoPlaylistCache("wetv:master", cacheParts);
+
+    if (cached) {
+      return reply
+        .header("Content-Type", "application/vnd.apple.mpegurl")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "hit")
+        .send(cached);
+    }
 
     // Fetch master M3U8
     const m3u8Res = await fetch(info.m3u8Url, {
@@ -317,11 +334,13 @@ export const wetvProxyRoutes: FastifyPluginAsync = async (app) => {
 
     const m3u8Text = await m3u8Res.text();
     const rewritten = rewriteM3u8(m3u8Text, baseUrl, info.m3u8Url);
+    await writeVideoPlaylistCache("wetv:master", cacheParts, rewritten);
 
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+      .header("X-Video-Playlist-Cache", "miss")
       .send(rewritten);
   });
 
@@ -361,15 +380,29 @@ export const wetvProxyRoutes: FastifyPluginAsync = async (app) => {
         return reply
           .header("Content-Type", contentType)
           .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_SEGMENT_CACHE_CONTROL)
           .send(Buffer.from(bodyText, "latin1"));
       }
       const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, targetUrl];
+      const cached = await readVideoPlaylistCache("wetv:segment", cacheParts);
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
+      const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
+      await writeVideoPlaylistCache("wetv:segment", cacheParts, rewritten);
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
-        .send(rewriteM3u8(bodyText, baseUrl, targetUrl));
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
+        .send(rewritten);
     }
 
     // Binary .ts segment
@@ -377,7 +410,7 @@ export const wetvProxyRoutes: FastifyPluginAsync = async (app) => {
     reply.raw.writeHead(200, {
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     });
     await pipeline(
       upstream.body as unknown as NodeJS.ReadableStream,

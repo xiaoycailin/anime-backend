@@ -3,6 +3,7 @@ import { prisma } from "../../lib/prisma";
 import { CACHE_KEYS, CACHE_TTL, getCache, setCache } from "../../lib/cache";
 import { ok, sendError } from "../../utils/response";
 import { normalizeTitle } from "../../utils/season-parser";
+import { PUBLIC_CACHE, setPublicCache } from "../../utils/cache-control";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -30,6 +31,7 @@ export const trendingRoutes: FastifyPluginAsync = async (app) => {
     windowStart.setDate(windowStart.getDate() - 7);
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.SECTION);
       const cached = await getCache<WeeklyTrendingItem[]>(cacheKey);
 
       if (cached) {

@@ -1,6 +1,12 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
 import { STREAMING_HOST_URL } from "./url-config";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/ac-stream";
 const ANICHIN_BASE = "https://anichin.stream";
@@ -100,6 +106,18 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
     async (req, reply) => {
       const { videoId } = req.params;
       const upstreamUrl = `${ANICHIN_BASE}/hls/${videoId}.m3u8`;
+      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, upstreamUrl];
+      const cached = await readVideoPlaylistCache("ac:master", cacheParts);
+
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
 
       const upstream = await fetch(upstreamUrl, {
         headers: {
@@ -118,15 +136,14 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
 
       const text = await upstream.text();
 
-      const port = req.port ? `:${req.port}` : "";
-      const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
-
       const rewritten = rewriteM3u8(text, baseUrl, upstreamUrl);
+      await writeVideoPlaylistCache("ac:master", cacheParts, rewritten);
 
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     },
   );
@@ -185,18 +202,30 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
         return reply
           .header("Content-Type", contentType)
           .header("Access-Control-Allow-Origin", "*")
-          .header("Cache-Control", "public, max-age=3600")
+          .header("Cache-Control", VIDEO_SEGMENT_CACHE_CONTROL)
           .send(buffer);
       }
 
       // const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, targetUrl];
+      const cached = await readVideoPlaylistCache("ac:segment", cacheParts);
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
+      await writeVideoPlaylistCache("ac:segment", cacheParts, rewritten);
 
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     }
 
@@ -207,7 +236,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     });
 
     await pipeline(

@@ -17,6 +17,7 @@ export const CACHE_TTL = {
   GENRES: 3600,
   TAGS: 3600,
   STUDIOS: 3600,
+  SUBTITLES: 3600,
 } as const;
 
 export const CACHE_KEYS = {
@@ -32,7 +33,7 @@ export const CACHE_KEYS = {
   search: (queryKey: string) => `anime:list:search:${queryKey}`,
   animeDetail: (slug: string) => `anime:detail:${slug}`,
   episodeDetail: (animeSlug: string, episodeSlug: string) =>
-    `anime:episode:${animeSlug}:${episodeSlug}`,
+    `anime:episode:${animeSlug}:v2:${episodeSlug}`,
   publicUser: (userId: number) => `user:public:${userId}`,
   publicUserHistory: (userId: number, page: number, limit: number) =>
     `user:public:${userId}:history:${page}:${limit}`,
@@ -43,6 +44,8 @@ export const CACHE_KEYS = {
   genres: () => "anime:meta:genres",
   tags: (limit: number) => `anime:meta:tags:${limit}`,
   studios: (limit: number) => `anime:meta:studios:${limit}`,
+  subtitleVtt: (episodeId: number, serverId: number, language: string) =>
+    `subtitle:vtt:${episodeId}:${serverId}:${language}`,
 } as const;
 
 const CACHE_PATTERNS = {

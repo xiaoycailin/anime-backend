@@ -1,6 +1,12 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
 import { STREAMING_HOST_URL } from "./url-config";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/okru-stream";
 
@@ -245,6 +251,22 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
 
       // ── Case 1: Ada hlsManifestUrl → proxy manifest + rewrite segment URLs
       if (metadata.hlsManifestUrl) {
+        const cacheParts = [
+          baseUrl,
+          req.params.videoId,
+          metadata.referer ?? OKRU_REFERER,
+        ];
+        const cached = await readVideoPlaylistCache("okru:master", cacheParts);
+
+        if (cached) {
+          return reply
+            .header("Content-Type", "application/vnd.apple.mpegurl")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+            .header("X-Video-Playlist-Cache", "hit")
+            .send(cached);
+        }
+
         const hlsRes = await fetch(metadata.hlsManifestUrl, {
           headers: {
             "User-Agent":
@@ -267,11 +289,13 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
           metadata.hlsManifestUrl,
           metadata.referer,
         );
+        await writeVideoPlaylistCache("okru:master", cacheParts, rewritten);
 
         return reply
           .header("Content-Type", "application/vnd.apple.mpegurl")
           .header("Access-Control-Allow-Origin", "*")
-          .header("Cache-Control", "no-cache")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "miss")
           .send(rewritten);
       }
 
@@ -317,7 +341,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
         .send(m3u8Lines.join("\n"));
     },
   );
@@ -371,7 +395,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
       .send(mediaPlaylist);
   });
 
@@ -423,20 +447,33 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       const bodyText = await upstream.text();
 
       if (!bodyText.trimStart().startsWith("#EXTM3U")) {
-        const buffer = Buffer.from(bodyText, "latin1");
-        return reply
-          .header("Content-Type", contentType)
-          .header("Access-Control-Allow-Origin", "*")
-          .header("Cache-Control", "public, max-age=3600")
-          .send(buffer);
+          const buffer = Buffer.from(bodyText, "latin1");
+          return reply
+            .header("Content-Type", contentType)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Cache-Control", VIDEO_SEGMENT_CACHE_CONTROL)
+            .send(buffer);
       }
 
       // const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, targetUrl, req.query.r ?? OKRU_REFERER];
+      const cached = await readVideoPlaylistCache("okru:segment", cacheParts);
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl, req.query.r);
+      await writeVideoPlaylistCache("okru:segment", cacheParts, rewritten);
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     }
 
@@ -447,7 +484,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     });
 
     await pipeline(
@@ -502,6 +539,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
       "Accept-Ranges": "bytes",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     };
 
     const contentLength = upstream.headers.get("content-length");

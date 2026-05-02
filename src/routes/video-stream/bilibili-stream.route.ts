@@ -1,6 +1,10 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
+import {
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+} from "../../utils/video-stream-cache";
 
 // ffmpeg-static: bundle binary ffmpeg ke node_modules, no system install needed.
 // Fallback ke "ffmpeg" di PATH kalau package tidak terpasang (dev ergonomics).
@@ -581,7 +585,7 @@ async function streamMp4Response(
   const forwardHeaders: Record<string, string> = {
     "Content-Type": contentType,
     "Accept-Ranges": acceptRanges,
-    "Cache-Control": "no-cache",
+    "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "*",
@@ -790,7 +794,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
       .send(m3u8Lines.join("\n"));
   });
 
@@ -858,7 +862,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
       .send(mediaPlaylist);
   });
 
@@ -1043,7 +1047,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "no-cache",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
       "Transfer-Encoding": "chunked",
     });
 
@@ -1574,7 +1578,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "no-cache",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
       "Transfer-Encoding": "chunked",
       "X-Accel-Buffering": "no",
     });
@@ -1779,7 +1783,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
       .send(lines.join("\n"));
   });
 
@@ -1843,7 +1847,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "public, max-age=60")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
         .send(lines.join("\n"));
     },
   );

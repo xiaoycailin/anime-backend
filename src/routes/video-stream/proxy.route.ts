@@ -6,6 +6,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { sendError } from "../../utils/response";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 const PROXY_BASE_PATH = "/api/video-stream/proxy";
 const FORWARDED_HEADERS = [
@@ -362,6 +368,20 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       );
 
       if (isPlaylist) {
+        const cacheParts = [
+          PROXY_BASE_PATH,
+          effectiveTargetUrl,
+          request.headers.host ?? "",
+        ];
+        const cached = await readVideoPlaylistCache("proxy:playlist", cacheParts);
+        if (cached) {
+          reply.code(upstreamStatus);
+          reply.header("content-type", "application/vnd.apple.mpegurl");
+          reply.header("cache-control", VIDEO_PLAYLIST_CACHE_CONTROL);
+          reply.header("x-video-playlist-cache", "hit");
+          return reply.send(cached);
+        }
+
         const manifestText = useCurl
           ? (upstreamCurl?.body.toString("utf8") ?? "")
           : ((await upstreamFetch?.text()) ?? "");
@@ -370,15 +390,12 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
           effectiveTargetUrl,
           PROXY_BASE_PATH,
         );
+        await writeVideoPlaylistCache("proxy:playlist", cacheParts, rewritten);
 
         reply.code(upstreamStatus);
         reply.header("content-type", "application/vnd.apple.mpegurl");
-        reply.header(
-          "cache-control",
-          (useCurl
-            ? upstreamCurl?.headers.get("cache-control")
-            : upstreamFetch?.headers.get("cache-control")) ?? "no-cache",
-        );
+        reply.header("cache-control", VIDEO_PLAYLIST_CACHE_CONTROL);
+        reply.header("x-video-playlist-cache", "miss");
         return reply.send(rewritten);
       }
 
@@ -390,6 +407,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
         if (!headerValue) continue;
         reply.header(headerName, headerValue);
       }
+      reply.header("cache-control", VIDEO_SEGMENT_CACHE_CONTROL);
 
       if (useCurl) {
         return reply.send(upstreamCurl?.body ?? Buffer.alloc(0));

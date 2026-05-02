@@ -1,5 +1,11 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/dm-stream";
 const DM_BASE = "https://www.dailymotion.com";
@@ -220,6 +226,21 @@ export const dmProxyRoutes: FastifyPluginAsync = async (app) => {
     const { masterUrl, dmvk } = meta;
 
     // Fetch master M3U8
+    const masterUrlClean = stripFragment(masterUrl);
+    const port = req.port ? `:${req.port}` : "";
+    const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+    const cacheParts = [baseUrl, masterUrlClean, dmvk ?? ""];
+    const cached = await readVideoPlaylistCache("dm:master", cacheParts);
+
+    if (cached) {
+      return reply
+        .header("Content-Type", "application/vnd.apple.mpegurl")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "hit")
+        .send(cached);
+    }
+
     const masterRes = await fetch(masterUrl, {
       headers: {
         "User-Agent":
@@ -238,18 +259,14 @@ export const dmProxyRoutes: FastifyPluginAsync = async (app) => {
 
     const masterText = await masterRes.text();
 
-    // Strip fragment dari masterUrl sebelum dipakai sebagai base untuk resolve
-    const masterUrlClean = stripFragment(masterUrl);
-
-    const port = req.port ? `:${req.port}` : "";
-    const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
-
     const rewritten = rewriteM3u8(masterText, baseUrl, masterUrlClean);
+    await writeVideoPlaylistCache("dm:master", cacheParts, rewritten);
 
     return reply
       .header("Content-Type", "application/vnd.apple.mpegurl")
       .header("Access-Control-Allow-Origin", "*")
-      .header("Cache-Control", "no-cache")
+      .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+      .header("X-Video-Playlist-Cache", "miss")
       .send(rewritten);
   });
 
@@ -305,18 +322,30 @@ export const dmProxyRoutes: FastifyPluginAsync = async (app) => {
         return reply
           .header("Content-Type", contentType)
           .header("Access-Control-Allow-Origin", "*")
-          .header("Cache-Control", "public, max-age=3600")
+          .header("Cache-Control", VIDEO_SEGMENT_CACHE_CONTROL)
           .send(buffer);
       }
 
       const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${req.protocol}://${req.hostname}${port}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, targetUrl];
+      const cached = await readVideoPlaylistCache("dm:segment", cacheParts);
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
+      await writeVideoPlaylistCache("dm:segment", cacheParts, rewritten);
 
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     }
 
@@ -327,7 +356,7 @@ export const dmProxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     });
 
     await pipeline(

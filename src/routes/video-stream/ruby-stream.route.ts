@@ -1,6 +1,12 @@
 import { FastifyPluginAsync } from "fastify";
 import { pipeline } from "node:stream/promises";
 import { STREAMING_HOST_URL } from "./url-config";
+import {
+  readVideoPlaylistCache,
+  VIDEO_PLAYLIST_CACHE_CONTROL,
+  VIDEO_SEGMENT_CACHE_CONTROL,
+  writeVideoPlaylistCache,
+} from "../../utils/video-stream-cache";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/ruby-stream";
 
@@ -257,6 +263,17 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
 
       // const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, meta.masterM3u8Url];
+      const cached = await readVideoPlaylistCache("ruby:master", cacheParts);
+
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
 
       // Fetch master M3U8 dari CDN streamruby
       const hlsRes = await fetch(meta.masterM3u8Url, {
@@ -276,11 +293,13 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
 
       const m3u8Text = await hlsRes.text();
       const rewritten = rewriteM3u8(m3u8Text, baseUrl, meta.masterM3u8Url);
+      await writeVideoPlaylistCache("ruby:master", cacheParts, rewritten);
 
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     },
   );
@@ -338,18 +357,30 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
         return reply
           .header("Content-Type", contentType)
           .header("Access-Control-Allow-Origin", "*")
-          .header("Cache-Control", "public, max-age=3600")
+          .header("Cache-Control", VIDEO_SEGMENT_CACHE_CONTROL)
           .send(buffer);
       }
 
       // const port = req.port ? `:${req.port}` : "";
       const baseUrl = `${STREAMING_HOST_URL}${BASE_PREFIX_SERVER_PATH}`;
+      const cacheParts = [baseUrl, targetUrl];
+      const cached = await readVideoPlaylistCache("ruby:segment", cacheParts);
+      if (cached) {
+        return reply
+          .header("Content-Type", "application/vnd.apple.mpegurl")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+          .header("X-Video-Playlist-Cache", "hit")
+          .send(cached);
+      }
       const rewritten = rewriteM3u8(bodyText, baseUrl, targetUrl);
+      await writeVideoPlaylistCache("ruby:segment", cacheParts, rewritten);
 
       return reply
         .header("Content-Type", "application/vnd.apple.mpegurl")
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-cache")
+        .header("Cache-Control", VIDEO_PLAYLIST_CACHE_CONTROL)
+        .header("X-Video-Playlist-Cache", "miss")
         .send(rewritten);
     }
 
@@ -360,7 +391,7 @@ export const rubyProxyRoutes: FastifyPluginAsync = async (app) => {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "*",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": VIDEO_SEGMENT_CACHE_CONTROL,
     });
 
     await pipeline(

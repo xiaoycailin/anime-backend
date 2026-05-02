@@ -10,6 +10,7 @@ import {
 } from "../../lib/cache";
 import { ok, sendError } from "../../utils/response";
 import { normalizeTitle } from "../../utils/season-parser";
+import { PUBLIC_CACHE, setPublicCache } from "../../utils/cache-control";
 
 const ACCENT_PRESETS = [
   "from-violet-600 to-purple-700",
@@ -109,6 +110,7 @@ export const bannersRoutes: FastifyPluginAsync = async (app) => {
     );
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.SECTION);
       const cached = await getCache<BannerItem[]>(cacheKey);
 
       if (cached) {

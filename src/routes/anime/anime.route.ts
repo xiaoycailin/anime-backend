@@ -27,6 +27,7 @@ import {
   setCache,
   setCacheField,
 } from "../../lib/cache";
+import { PUBLIC_CACHE, setPublicCache } from "../../utils/cache-control";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -643,6 +644,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const cacheKey = CACHE_KEYS.newRelease(limit);
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.FAST);
       type NewReleaseItem = {
         id: number;
         slug: string;
@@ -755,6 +757,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const cacheKey = CACHE_KEYS.popular(limit);
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.FAST);
       const cached = await getCache<ReturnType<typeof formatAnimeCard>[]>(
         cacheKey,
       );
@@ -841,6 +844,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const cacheKey = CACHE_KEYS.trending(limit);
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.FAST);
       const cached = await getCache<ReturnType<typeof formatAnimeCard>[]>(
         cacheKey,
       );
@@ -1241,6 +1245,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const cacheKey = CACHE_KEYS.genres();
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.STATIC_META);
       const cached = await getCache<
         { id: number; name: string; animeCount: number }[]
       >(cacheKey);
@@ -1655,7 +1660,17 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
               totalEpisodes: true,
               skipIntroSeconds: true,
               skipOutroSeconds: true,
-              episodes: true,
+              episodes: {
+                orderBy: [{ number: "asc" }, { id: "asc" }],
+                select: {
+                  id: true,
+                  slug: true,
+                  number: true,
+                  title: true,
+                  sub: true,
+                  date: true,
+                },
+              },
               genres: {
                 select: {
                   genre: {
@@ -1852,6 +1867,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           }),
         ]);
 
+      const watchSeasons = seasons.map(({ anime: _anime, ...season }) => season);
+
       const relatedVideos = relatedAnimes
         .map((anime) => {
           const genres = anime.genres.map((item) => item.genre.name);
@@ -1953,8 +1970,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         views: episode.views,
         skipIntroSeconds: episode.skipIntroSeconds,
         skipOutroSeconds: episode.skipOutroSeconds,
-        episodes: episode.anime.episodes,
-        seasons,
+        episodes: watchSeasons.length > 0 ? [] : episode.anime.episodes,
+        seasons: watchSeasons,
         anime: {
           id: episode.anime.id,
           slug: episode.anime.slug,

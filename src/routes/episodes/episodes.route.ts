@@ -13,6 +13,7 @@ import {
   setCache,
   setCacheField,
 } from "../../lib/cache";
+import { PUBLIC_CACHE, setPublicCache } from "../../utils/cache-control";
 
 function toPositiveInt(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -183,6 +184,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
     const cacheKey = CACHE_KEYS.latestEpisodes(limit);
 
     try {
+      setPublicCache(reply, PUBLIC_CACHE.FAST);
       type LatestItem = {
         id: number;
         title: string;
