@@ -7,6 +7,7 @@ import { authPlugin } from "./plugins/auth";
 import { adminGuardPlugin } from "./plugins/adminGuard";
 import { registerErrorHandlers } from "./plugins/error-handler";
 import { registerChatWebSocket } from "./services/chat-ws.service";
+import { recordRequestMetric } from "./services/health-metrics.service";
 import { sendResponse } from "./utils/response";
 import fs from "fs";
 import path from "path";
@@ -67,6 +68,10 @@ export function buildApp() {
     if (methods.length === 0) return;
 
     app.log.info(`[ROUTE] ${methods.join(", ")} ${routeOptions.url}`);
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    recordRequestMetric(request, reply);
   });
 
   app.get("/", async (_request, reply) =>
