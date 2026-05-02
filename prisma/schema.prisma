@@ -50,6 +50,7 @@ model Anime {
   extraMetadata    AnimeMetaExtra[]
   likedBy          AnimeLike[]
   reviews          AnimeReview[]
+  watchPartyRooms  WatchPartyRoom[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -93,6 +94,8 @@ model User {
   expLogs                ExpLog[]
   decorations            UserDecoration[]
   refreshTokens          RefreshToken[]
+  hostedWatchPartyRooms  WatchPartyRoom[]        @relation("WatchPartyHost")
+  watchPartyParticipants WatchPartyParticipant[]
 }
 
 model RefreshToken {
@@ -517,6 +520,7 @@ model Episode {
   subtitleTracks  SubtitleTrack[]
   reactions       EpisodeReaction[]
   reports         EpisodeReport[]
+  watchPartyRooms WatchPartyRoom[]
 
   // @@unique([animeId, number]) ← HAPUS INI
 
@@ -772,4 +776,55 @@ model UploadSession {
   @@index([episodeId])
   @@index([status, expiresAt])
   @@map("upload_sessions")
+}
+
+// ─── WATCH PARTY / NONTON BARENG ─────────────────────────────────────────────
+
+model WatchPartyRoom {
+  id                 String                  @id @db.VarChar(36)
+  code               String                  @unique @db.VarChar(16)
+  hostId             Int                     @map("host_id")
+  animeId            Int                     @map("anime_id")
+  episodeId          Int                     @map("episode_id")
+  title              String?                 @db.VarChar(120)
+  status             String                  @default("waiting") @db.VarChar(20)
+  visibility         String                  @default("unlisted") @db.VarChar(20)
+  playbackState      Json?                   @map("playback_state")
+  lastPlaybackAt     Float                   @default(0) @map("last_playback_at")
+  lastPlaybackStatus String                  @default("paused") @map("last_playback_status") @db.VarChar(20)
+  participantCount   Int                     @default(1) @map("participant_count")
+  expiresAt          DateTime                @map("expires_at")
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+
+  host         User                    @relation("WatchPartyHost", fields: [hostId], references: [id], onDelete: Cascade)
+  anime        Anime                   @relation(fields: [animeId], references: [id], onDelete: Cascade)
+  episode      Episode                 @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  participants WatchPartyParticipant[]
+
+  @@index([hostId, updatedAt(sort: Desc)])
+  @@index([episodeId, status, updatedAt(sort: Desc)])
+  @@index([expiresAt, status])
+  @@map("watch_party_rooms")
+}
+
+model WatchPartyParticipant {
+  id          Int       @id @default(autoincrement())
+  roomId      String    @map("room_id") @db.VarChar(36)
+  userId      Int?      @map("user_id")
+  guestId     String?   @map("guest_id") @db.VarChar(64)
+  displayName String    @map("display_name") @db.VarChar(80)
+  role        String    @default("viewer") @db.VarChar(20)
+  joinedAt    DateTime  @default(now()) @map("joined_at")
+  lastSeenAt  DateTime  @default(now()) @map("last_seen_at")
+  leftAt      DateTime? @map("left_at")
+
+  room WatchPartyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([roomId, userId])
+  @@unique([roomId, guestId])
+  @@index([roomId, lastSeenAt(sort: Desc)])
+  @@index([userId, lastSeenAt(sort: Desc)])
+  @@map("watch_party_participants")
 }
