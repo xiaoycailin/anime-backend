@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { prisma } from "../../lib/prisma";
+import { CACHE_KEYS, CACHE_TTL, getCache, setCache } from "../../lib/cache";
 import { ok, sendError } from "../../utils/response";
 import { normalizeTitle } from "../../utils/season-parser";
 
@@ -9,16 +10,43 @@ function toPositiveInt(value: unknown, fallback: number) {
   return Math.floor(parsed);
 }
 
+type WeeklyTrendingItem = {
+  id: number;
+  slug: string;
+  title: string;
+  genre: string[];
+  thumbnail: string | null;
+  status: string | null;
+};
+
 export const trendingRoutes: FastifyPluginAsync = async (app) => {
   app.get("/weekly", async (request, reply) => {
     const query = request.query as { limit?: string };
     const limit = Math.min(toPositiveInt(query.limit, 9), 50);
+    const cacheKey = CACHE_KEYS.trendingWeekly(limit);
 
     const windowEnd = new Date();
     const windowStart = new Date(windowEnd);
     windowStart.setDate(windowStart.getDate() - 7);
 
     try {
+      const cached = await getCache<WeeklyTrendingItem[]>(cacheKey);
+
+      if (cached) {
+        return ok(reply, {
+          message: "Weekly trending anime fetched successfully",
+          data: cached,
+          meta: {
+            limit,
+            windowStart: windowStart.toISOString(),
+            windowEnd: windowEnd.toISOString(),
+            ranking: ["followed desc", "rating desc", "updatedAt desc"],
+            note: "Trending is inferred from recently updated anime and popularity fields.",
+            cache: "hit",
+          },
+        });
+      }
+
       const animes = await prisma.anime.findMany({
         where: {
           updatedAt: {
@@ -49,22 +77,27 @@ export const trendingRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
+      const data: WeeklyTrendingItem[] = animes.map((anime) => ({
+        id: anime.id,
+        slug: anime.slug,
+        title: normalizeTitle(anime.title),
+        genre: anime.genres.map((item) => item.genre.name),
+        thumbnail: anime.thumbnail,
+        status: anime.status,
+      }));
+
+      await setCache(cacheKey, data, CACHE_TTL.TRENDING_WEEKLY);
+
       return ok(reply, {
         message: "Weekly trending anime fetched successfully",
-        data: animes.map((anime) => ({
-          id: anime.id,
-          slug: anime.slug,
-          title: normalizeTitle(anime.title),
-          genre: anime.genres.map((item) => item.genre.name),
-          thumbnail: anime.thumbnail,
-          status: anime.status,
-        })),
+        data,
         meta: {
           limit,
           windowStart: windowStart.toISOString(),
           windowEnd: windowEnd.toISOString(),
           ranking: ["followed desc", "rating desc", "updatedAt desc"],
           note: "Trending is inferred from recently updated anime and popularity fields.",
+          cache: "miss",
         },
       });
     } catch (error) {

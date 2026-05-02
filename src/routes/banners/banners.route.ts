@@ -1,6 +1,13 @@
 import type { FastifyPluginAsync } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
+import {
+  buildQueryKey,
+  CACHE_KEYS,
+  CACHE_TTL,
+  getCache,
+  setCache,
+} from "../../lib/cache";
 import { ok, sendError } from "../../utils/response";
 import { normalizeTitle } from "../../utils/season-parser";
 
@@ -68,6 +75,21 @@ function formatEpisodeLabel(
   return `Episode 1-${finalCount}`;
 }
 
+type BannerItem = {
+  id: number;
+  slug: string;
+  title: string;
+  description: string;
+  genre: string[];
+  episode: string;
+  rating: string | null;
+  status: "Completed" | "Ongoing";
+  thumbnail: string;
+  banner: string;
+  href: string;
+  accent: string;
+};
+
 export const bannersRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (request, reply) => {
     const query = request.query as {
@@ -79,8 +101,28 @@ export const bannersRoutes: FastifyPluginAsync = async (app) => {
     const limit = Math.min(toPositiveInt(query.limit, 3), 20);
     const sortBy = parseSortBy(query.sortBy ?? query.sortby);
     const orderBy = buildOrderBy(sortBy);
+    const cacheKey = CACHE_KEYS.banners(
+      buildQueryKey({
+        limit,
+        sortBy: sortBy.join(","),
+      }),
+    );
 
     try {
+      const cached = await getCache<BannerItem[]>(cacheKey);
+
+      if (cached) {
+        return ok(reply, {
+          message: "Banner data fetched successfully",
+          data: cached,
+          meta: {
+            limit,
+            sortBy,
+            cache: "hit",
+          },
+        });
+      }
+
       const animes = await prisma.anime.findMany({
         orderBy,
         take: limit,
@@ -112,7 +154,7 @@ export const bannersRoutes: FastifyPluginAsync = async (app) => {
         },
       });
 
-      const data = animes.map((anime, index) => ({
+      const data: BannerItem[] = animes.map((anime, index) => ({
         id: anime.id,
         slug: anime.slug,
         title: normalizeTitle(anime.title),
@@ -129,12 +171,15 @@ export const bannersRoutes: FastifyPluginAsync = async (app) => {
         accent: ACCENT_PRESETS[index % ACCENT_PRESETS.length],
       }));
 
+      await setCache(cacheKey, data, CACHE_TTL.BANNERS);
+
       return ok(reply, {
         message: "Banner data fetched successfully",
         data,
         meta: {
           limit,
           sortBy,
+          cache: "miss",
         },
       });
     } catch (error) {
