@@ -593,6 +593,9 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         genre: string[];
         thumbnail: string;
         status: "Ongoing" | "Completed";
+        type: string | null;
+        totalEpisodes: number | null;
+        episodeCount: number;
       };
 
       const cached = await getCache<NewReleaseItem[]>(cacheKey);
@@ -635,6 +638,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           title: true,
           thumbnail: true,
           status: true,
+          type: true,
+          totalEpisodes: true,
           genres: {
             select: {
               genre: {
@@ -642,6 +647,11 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
                   name: true,
                 },
               },
+            },
+          },
+          _count: {
+            select: {
+              episodes: true,
             },
           },
         },
@@ -660,6 +670,9 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         genre: anime.genres.map((item) => item.genre.name),
         thumbnail: anime.thumbnail ?? "",
         status: toAnimeStatus(anime.status),
+        type: anime.type,
+        totalEpisodes: anime.totalEpisodes,
+        episodeCount: anime._count.episodes,
       }));
 
       await setCache(cacheKey, data, CACHE_TTL.NEW_RELEASE);

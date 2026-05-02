@@ -190,6 +190,9 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         time: string;
         thumbnail: string | null;
         href: string;
+        animeType: string | null;
+        totalEpisodes: number | null;
+        episodeCount: number;
       };
 
       const cached = await getCache<LatestItem[]>(cacheKey);
@@ -219,6 +222,13 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
               title: true,
               thumbnail: true,
               updatedAt: true,
+              type: true,
+              totalEpisodes: true,
+              _count: {
+                select: {
+                  episodes: true,
+                },
+              },
             },
           },
         },
@@ -233,6 +243,9 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           formatRelativeTime(item.anime.updatedAt),
         thumbnail: item.thumbnail ?? item.anime.thumbnail,
         href: `/anime/${item.anime.slug}/${item.slug}`,
+        animeType: item.anime.type,
+        totalEpisodes: item.anime.totalEpisodes,
+        episodeCount: item.anime._count.episodes,
       }));
 
       await setCache(cacheKey, data, CACHE_TTL.LATEST_EPISODES);
