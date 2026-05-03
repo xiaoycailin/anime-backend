@@ -238,7 +238,7 @@ function extractOkruId(url: string) {
   return url.match(/ok\.ru\/video(?:embed)?\/(\d+)/)?.[1] ?? null;
 }
 
-function extractAnichinId(url: string) {
+function extractAcStreamId(url: string) {
   return (
     url.match(/[?&]id=([^&]+)/)?.[1] ??
     url.match(/\/hls\/([^.]+)\.m3u8/)?.[1] ??
@@ -270,8 +270,8 @@ function resolveStreamUrl(serverUrl: string, baseUrl: string) {
     if (id) return `${baseUrl}/api/video-stream/okru-stream/playlist/${id}`;
   }
 
-  if (serverUrl.includes("anichin.stream")) {
-    const id = extractAnichinId(serverUrl);
+  if (serverUrl.includes("anichin.stream") || serverUrl.includes("mecdn.xyz")) {
+    const id = extractAcStreamId(serverUrl);
     if (id) return `${baseUrl}/api/video-stream/ac-stream/playlist/${id}`;
   }
 
