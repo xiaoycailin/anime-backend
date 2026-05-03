@@ -45,10 +45,9 @@ else
 fi
 
 if pm2 describe "$GO_PROXY_NAME" >/dev/null 2>&1; then
-	PORT="$GO_PROXY_PORT" pm2 restart "$GO_PROXY_NAME" --update-env
-else
-	PORT="$GO_PROXY_PORT" pm2 start ./video-proxy-go/video-proxy --name "$GO_PROXY_NAME"
+	pm2 delete "$GO_PROXY_NAME"
 fi
+(cd video-proxy-go && PORT="$GO_PROXY_PORT" pm2 start ./video-proxy --name "$GO_PROXY_NAME")
 
 pm2 save
 echo "Backend service '$APP_NAME' is running on port $APP_PORT."
