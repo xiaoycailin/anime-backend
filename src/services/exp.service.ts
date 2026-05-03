@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { getEquippedDecorations, syncUnlocks } from "./decoration.service";
+import { createUserNotification } from "./notification.service";
 
 export type ExpType =
   | "open_app"
@@ -189,7 +190,13 @@ export async function addExp(
     if (!result) return { granted: false, reason: "invalid", value: 0 };
 
     if (result.level > result.previousLevel) {
-      await syncUnlocks(userId, result.level).catch(() => null);
+      const [unlockedIds] = await Promise.all([
+        syncUnlocks(userId, result.level).catch(() => [] as number[]),
+        notifyBadgeUnlock(userId, result.previousLevel, result.level, result.totalExp).catch(
+          () => null,
+        ),
+      ]);
+      void unlockedIds;
     }
 
     return {
@@ -205,6 +212,33 @@ export async function addExp(
     }
     throw error;
   }
+}
+
+async function notifyBadgeUnlock(
+  userId: number,
+  previousLevel: number,
+  level: number,
+  totalExp: number,
+) {
+  const previousBadge = getCultivationBadge(previousLevel);
+  const nextBadge = getCultivationBadge(level);
+  if (previousBadge.name === nextBadge.name) return;
+
+  await createUserNotification({
+    userId,
+    category: "personal_activity",
+    type: "badge_unlocked",
+    title: "Badge baru terbuka",
+    message: `Kamu mencapai ${nextBadge.name} di level ${level}.`,
+    link: "/exp",
+    topic: "exp",
+    payload: {
+      previousLevel,
+      level,
+      totalExp,
+      badge: nextBadge.name,
+    },
+  });
 }
 
 export async function grantWatchExp(input: {
