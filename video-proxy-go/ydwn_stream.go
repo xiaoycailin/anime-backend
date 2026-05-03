@@ -193,7 +193,7 @@ func (a *app) ydwnSubtitleVTT(w http.ResponseWriter, r *http.Request) {
 	videoID := captionVideoID(target)
 	content := a.fetchCaptionVTT(r.Context(), withCaptionClientParams(target, captionPot(videoID)))
 	if content == "" {
-		http.Error(w, "subtitle upstream returned empty cues", http.StatusBadGateway)
+		writeText(w, "text/vtt; charset=utf-8", "public, max-age=300", "WEBVTT\n\nNOTE Subtitle upstream returned empty cues\n")
 		return
 	}
 	writeText(w, "text/vtt; charset=utf-8", "public, max-age=3600", content)
