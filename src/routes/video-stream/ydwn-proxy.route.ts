@@ -26,13 +26,12 @@ function headerValue(value: string | string[] | undefined, fallback = "") {
   return Array.isArray(value) ? value.join(", ") : value ?? fallback;
 }
 
-function forwardedProto(req: { protocol: string; headers: Record<string, unknown> }) {
-  return headerValue(req.headers["x-forwarded-proto"] as string | string[] | undefined, req.protocol);
-}
-
-function forwardedHost(req: { headers: Record<string, unknown> }) {
-  const host = req.headers["x-forwarded-host"] ?? req.headers.host;
-  return headerValue(host as string | string[] | undefined);
+function streamingPublicURL() {
+  try {
+    return new URL(STREAMING_HOST_URL);
+  } catch {
+    return null;
+  }
 }
 
 function copyResponseHeaders(source: Headers, reply: FastifyReply) {
@@ -83,8 +82,8 @@ export const ydwnProxyRoutes: FastifyPluginAsync = async (app) => {
             Accept: headerValue(req.headers.accept, "*/*"),
             "Accept-Language": headerValue(req.headers["accept-language"], "en-US,en;q=0.9"),
             Range: headerValue(req.headers.range),
-            "X-Forwarded-Host": forwardedHost(req),
-            "X-Forwarded-Proto": forwardedProto(req),
+            "X-Forwarded-Host": streamingPublicURL()?.host ?? "",
+            "X-Forwarded-Proto": streamingPublicURL()?.protocol.replace(":", "") ?? "https",
           },
         });
       } catch (err) {
