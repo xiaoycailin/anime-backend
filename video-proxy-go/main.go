@@ -43,6 +43,7 @@ type app struct {
 }
 
 func main() {
+	loadSelectedEnv("../.env", "YOUTUBE_PO_TOKEN")
 	port := env("PORT", "8091")
 	server := &http.Server{
 		Addr:              ":" + port,
@@ -97,6 +98,8 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/healthz":
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
+	case strings.HasPrefix(r.URL.Path, "/api/video-stream/ydwn-proxy/"):
+		a.serveYdwn(w, r)
 	case strings.Contains(r.URL.Path, "/mp4-segment/"):
 		a.proxyBinary(w, r, "video/mp4")
 	case strings.Contains(r.URL.Path, "/segment"):
