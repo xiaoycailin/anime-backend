@@ -35,7 +35,7 @@ fi
 
 APP_NAME="anime-api"
 APP_PORT="3301"
-GO_PROXY_NAME="anime-video-proxy"
+GO_PROXY_NAME="video-proxy-go"
 GO_PROXY_PORT="8091"
 
 if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
