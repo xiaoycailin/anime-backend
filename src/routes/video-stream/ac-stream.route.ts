@@ -7,6 +7,7 @@ import {
   VIDEO_SEGMENT_CACHE_CONTROL,
   writeVideoPlaylistCache,
 } from "../../utils/video-stream-cache";
+import { orderHlsVariantsForFastStart } from "./hls-optimizer";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/ac-stream";
 const ANICHIN_BASE = "https://anichin.stream";
@@ -62,7 +63,7 @@ function rewriteM3u8(
     });
   }
 
-  return content
+  const rewritten = content
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
@@ -75,6 +76,7 @@ function rewriteM3u8(
       return proxyUrl(trimmed);
     })
     .join("\n");
+  return orderHlsVariantsForFastStart(rewritten);
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import {
   VIDEO_SEGMENT_CACHE_CONTROL,
   writeVideoPlaylistCache,
 } from "../../utils/video-stream-cache";
+import { orderHlsVariantsForFastStart } from "./hls-optimizer";
 
 const BASE_PREFIX_SERVER_PATH = "/api/video-stream/okru-stream";
 
@@ -80,7 +81,7 @@ function rewriteM3u8(
     });
   }
 
-  return content
+  const rewritten = content
     .split("\n")
     .map((line) => {
       const trimmed = line.trim();
@@ -91,6 +92,7 @@ function rewriteM3u8(
       return proxyUrl(trimmed);
     })
     .join("\n");
+  return orderHlsVariantsForFastStart(rewritten);
 }
 
 // ─── Helper: Fetch & parse metadata dari ok.ru embed page ────────────────────
@@ -306,7 +308,7 @@ export const proxyRoutes: FastifyPluginAsync = async (app) => {
       // HLS.js mengharapkan sub-playlist M3U8, bukan file MP4 binary.
       const m3u8Lines = ["#EXTM3U", "#EXT-X-VERSION:3"];
 
-      const qualityOrder = ["full", "hd", "sd", "low", "lowest", "mobile"];
+      const qualityOrder = ["mobile", "lowest", "low", "sd", "hd", "full"];
       const bandwidthMap: Record<string, number> = {
         full: 4000000,
         hd: 2500000,
