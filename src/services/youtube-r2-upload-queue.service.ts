@@ -153,10 +153,14 @@ async function runProcess(input: {
   command: string;
   args: string[];
   timeoutMs: number;
+  cwd?: string;
   onStdout?: (text: string) => void;
 }) {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(input.command, input.args, { windowsHide: true });
+    const child = spawn(input.command, input.args, {
+      cwd: input.cwd,
+      windowsHide: true,
+    });
     trackChild(input.uploadId, child);
     let stderr = "";
     let settled = false;
@@ -330,11 +334,12 @@ async function remuxToHls(input: {
       "-hls_fmp4_init_filename",
       "init.mp4",
       "-hls_segment_filename",
-      path.join(input.outputDir, "segment_%05d.m4s"),
+      "segment_%05d.m4s",
       "-f",
       "hls",
-      path.join(input.outputDir, "index.m3u8"),
+      "index.m3u8",
     ],
+    cwd: input.outputDir,
     timeoutMs: DOWNLOAD_TIMEOUT_MS,
   });
   const playlistPath = path.join(input.outputDir, "index.m3u8");
@@ -928,44 +933,34 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
 
   await assertNotCancelled(uploadId);
   await updateSessionStatus(uploadId, { currentResolution: 0 });
-  const audioPath = await downloadAudio({ uploadId, youtubeUrl, outputDir: tempDir }).catch(
-    async (error) => {
-      await appendEncodingLog(
-        uploadId,
-        `[audio] skip audio terpisah: ${error instanceof Error ? error.message : String(error)}`,
-        "warn",
-      );
-      return null;
-    },
-  );
+  const audioPath = await downloadAudio({ uploadId, youtubeUrl, outputDir: tempDir });
 
   await assertNotCancelled(uploadId);
-  if (audioPath) {
-    const audioDir = path.join(tempDir, "hls", "audio");
-    await updateSessionStatus(uploadId, {
-      currentResolution: 0,
-      encodingProgress: 0,
-      receivedChunks: 0,
-      totalChunks: null,
-    });
-    await remuxToHls({
-      uploadId,
-      sourcePath: audioPath,
-      outputDir: audioDir,
-      label: "audio",
-      media: "audio",
-    });
-    await updateSessionStatus(uploadId, { currentResolution: 0, encodingProgress: 100 });
-    await uploadFolder({
-      localDir: audioDir,
-      keyPrefix: `videos/${videoId}/audio`,
-      uploadId,
-      resolution: 0,
-      onProgress: maybePublishPeriodicMaster,
-    });
-    hasAudio = true;
-    await publishCurrentMaster("[master] audio track masuk playlist");
-  }
+  if (!audioPath) throw new Error("Audio YouTube tidak berhasil didownload");
+  const audioDir = path.join(tempDir, "hls", "audio");
+  await updateSessionStatus(uploadId, {
+    currentResolution: 0,
+    encodingProgress: 0,
+    receivedChunks: 0,
+    totalChunks: null,
+  });
+  await remuxToHls({
+    uploadId,
+    sourcePath: audioPath,
+    outputDir: audioDir,
+    label: "audio",
+    media: "audio",
+  });
+  await updateSessionStatus(uploadId, { currentResolution: 0, encodingProgress: 100 });
+  await uploadFolder({
+    localDir: audioDir,
+    keyPrefix: `videos/${videoId}/audio`,
+    uploadId,
+    resolution: 0,
+    onProgress: maybePublishPeriodicMaster,
+  });
+  hasAudio = true;
+  await publishCurrentMaster("[master] audio track masuk playlist");
 
   const handleResolution = async (resolution: number) => {
     await assertNotCancelled(uploadId);
