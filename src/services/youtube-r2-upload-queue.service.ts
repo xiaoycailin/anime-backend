@@ -703,6 +703,7 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
   let hasAudio = false;
   let masterPublish = Promise.resolve();
   let lastPeriodicPublish = 0;
+  let subtitleImport = Promise.resolve<Awaited<ReturnType<typeof importYouTubeSubtitlesWithYtDlp>> | null>(null);
 
   const publishCurrentMaster = async (logMessage?: string) => {
     masterPublish = masterPublish.then(async () => {
@@ -735,6 +736,19 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
   await publishCurrentMaster("[master] placeholder dibuat");
   await setEpisodeR2Server({ episodeId: session.episodeId, masterUrl });
   await appendEncodingLog(uploadId, "[master] linked ke episode sebelum varian selesai");
+  await appendEncodingLog(uploadId, "[subtitle] import awal dimulai");
+  subtitleImport = importYouTubeSubtitlesWithYtDlp({
+    episodeId: session.episodeId,
+    serverUrl: youtubeUrl,
+    targetServerUrl: masterUrl,
+  }).catch(async (error) => {
+    await appendEncodingLog(
+      uploadId,
+      `[subtitle] import awal gagal: ${error instanceof Error ? error.message : String(error)}`,
+      "warn",
+    );
+    return null;
+  });
 
   await assertNotCancelled(uploadId);
   await updateSessionStatus(uploadId, { currentResolution: 0 });
@@ -873,19 +887,16 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
     totalChunks: null,
   });
 
-  await appendEncodingLog(uploadId, "Import subtitle YouTube pilihan");
-  const subtitles = await importYouTubeSubtitlesWithYtDlp({
-    episodeId: session.episodeId,
-    serverUrl: youtubeUrl,
-    targetServerUrl: masterUrl,
-  });
-  const subtitleMessage = subtitles.message ?? "Subtitle import selesai";
-  await appendEncodingLog(
-    uploadId,
-    subtitleMessage,
-    subtitles.imported.length > 0 ? "info" : "warn",
-  );
-  if (subtitles.imported.length > 0) {
+  const subtitles = await subtitleImport;
+  if (subtitles) {
+    const subtitleMessage = subtitles.message ?? "Subtitle import selesai";
+    await appendEncodingLog(
+      uploadId,
+      subtitleMessage,
+      subtitles.imported.length > 0 ? "info" : "warn",
+    );
+  }
+  if (subtitles?.imported.length) {
     await appendEncodingLog(
       uploadId,
       `Subtitle tersimpan: ${subtitles.imported
