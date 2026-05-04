@@ -30,6 +30,10 @@ type Pm2ActionBody = {
   action?: string;
 };
 
+type Pm2LogParams = {
+  processName: string;
+};
+
 type DeployTarget = (typeof DEPLOY_TARGETS)[number];
 
 type DeployBody = {
@@ -138,6 +142,17 @@ async function latestDeployJob(target?: DeployTarget) {
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
 }
 
+async function clearDeployLogs() {
+  const dir = deployLogDir();
+  const files = await fs.readdir(dir).catch(() => []);
+  await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json") || file.endsWith(".log"))
+      .map((file) => fs.rm(path.join(dir, file), { force: true })),
+  );
+  return files.length;
+}
+
 async function timed<T>(task: () => Promise<T>) {
   const started = performance.now();
   const data = await task();
@@ -229,6 +244,27 @@ async function pm2Summary() {
   }
 }
 
+function assertPm2ProcessName(processName: string) {
+  if (!PM2_PROCESS_NAMES.includes(processName as Pm2ProcessName)) {
+    throw badRequest("Process PM2 tidak valid");
+  }
+  return processName as Pm2ProcessName;
+}
+
+async function pm2Logs(processName: Pm2ProcessName) {
+  const { stdout, stderr } = await execFileAsync(
+    "pm2",
+    ["logs", processName, "--lines", "200", "--nostream", "--raw"],
+    {
+      timeout: 7000,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024 * 2,
+    },
+  );
+
+  return [stdout, stderr].filter(Boolean).join("\n").slice(-80_000);
+}
+
 async function gitInfo(target: DeployTarget) {
   const cwd = deployPath(target);
   const runGit = async (args: string[]) => {
@@ -271,20 +307,17 @@ async function gitInfo(target: DeployTarget) {
 }
 
 function assertPm2Action(body: Pm2ActionBody) {
-  if (!PM2_PROCESS_NAMES.includes(body.processName as Pm2ProcessName)) {
-    throw badRequest("Process PM2 tidak valid");
-  }
-
+  const processName = assertPm2ProcessName(body.processName ?? "");
   if (!PM2_ACTIONS.includes(body.action as Pm2Action)) {
     throw badRequest("Action PM2 tidak valid");
   }
 
-  if (body.processName === "anime-api" && body.action === "stop") {
+  if (processName === "anime-api" && body.action === "stop") {
     throw badRequest("anime-api tidak bisa di-stop dari dashboard");
   }
 
   return {
-    processName: body.processName as Pm2ProcessName,
+    processName,
     action: body.action as Pm2Action,
   };
 }
@@ -382,6 +415,9 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
       backendDeploy,
       frontendDeploy,
       goProxyDeploy,
+      backendJob,
+      frontendJob,
+      goProxyJob,
     ] = await Promise.all([
       redisStatus(),
       goProxyStatus(),
@@ -389,6 +425,9 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
       gitInfo("backend"),
       gitInfo("frontend"),
       gitInfo("go-proxy"),
+      latestDeployJob("backend"),
+      latestDeployJob("frontend"),
+      latestDeployJob("go-proxy"),
     ]);
 
     return ok(reply, {
@@ -403,6 +442,11 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
           frontend: frontendDeploy,
           goProxy: goProxyDeploy,
         },
+        deployJobs: {
+          backend: backendJob ?? null,
+          frontend: frontendJob ?? null,
+          goProxy: goProxyJob ?? null,
+        },
         topEndpoints: getTopEndpointMetrics(),
         providerErrors: getProviderErrorMetrics(),
       },
@@ -411,9 +455,10 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
 
   app.post("/clear", async (_request, reply) => {
     const cleared = clearHealthMetrics();
+    const deployLogs = await clearDeployLogs();
     return ok(reply, {
       message: "Health logs dibersihkan",
-      data: { cleared },
+      data: { cleared, deployLogs },
     });
   });
 
@@ -427,6 +472,17 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
         processName,
         action,
         scheduled: result.scheduled,
+      },
+    });
+  });
+
+  app.get<{ Params: Pm2LogParams }>("/pm2/logs/:processName", async (request, reply) => {
+    const processName = assertPm2ProcessName(request.params.processName);
+    const logs = await pm2Logs(processName);
+    return ok(reply, {
+      data: {
+        processName,
+        logs,
       },
     });
   });
