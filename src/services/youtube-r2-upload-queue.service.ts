@@ -35,6 +35,7 @@ type YoutubeR2JobData = {
   uploadId: string;
   youtubeUrl: string;
   flow?: YoutubeR2Flow;
+  variantConcurrency?: number;
 };
 
 type YoutubeR2Flow = "v1" | "v2";
@@ -81,8 +82,7 @@ function workerConcurrency() {
   return Math.min(5, Math.max(1, Math.floor(value)));
 }
 
-function variantConcurrency() {
-  const value = Number(process.env.YOUTUBE_R2_VARIANT_CONCURRENCY ?? 2);
+function variantConcurrency(value = Number(process.env.YOUTUBE_R2_VARIANT_CONCURRENCY ?? 2)) {
   if (!Number.isFinite(value)) return 2;
   return Math.min(4, Math.max(1, Math.floor(value)));
 }
@@ -486,16 +486,23 @@ export async function enqueueYoutubeR2Upload(
   uploadId: string,
   youtubeUrl: string,
   flow: YoutubeR2Flow = "v1",
+  requestedVariantConcurrency?: number,
 ) {
   if (!isYouTubeUrl(youtubeUrl)) throw new Error("URL YouTube tidak valid");
   const session = await getUploadSession(uploadId);
   if (!session) throw new Error("Upload session tidak ditemukan");
 
   await redis.del(cancelKey(uploadId));
-  await appendEncodingLog(uploadId, `YDWN upload job masuk queue (${flow.toUpperCase()})`);
+  const safeVariantConcurrency = flow === "v2"
+    ? variantConcurrency(requestedVariantConcurrency)
+    : undefined;
+  const flowLabel = safeVariantConcurrency
+    ? `${flow.toUpperCase()} parallel ${safeVariantConcurrency}`
+    : flow.toUpperCase();
+  await appendEncodingLog(uploadId, `YDWN upload job masuk queue (${flowLabel})`);
   return getYoutubeR2UploadQueue().add(
     "import",
-    { uploadId, youtubeUrl, flow },
+    { uploadId, youtubeUrl, flow, variantConcurrency: safeVariantConcurrency },
     { jobId: uploadId },
   );
 }
@@ -706,6 +713,7 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
   const { uploadId, youtubeUrl } = job.data;
   const session = await getUploadSession(uploadId);
   if (!session) throw new Error("Upload session tidak ditemukan");
+  const parallel = variantConcurrency(job.data.variantConcurrency);
 
   const videoId = session.videoId ?? generateVideoId();
   const tempDir = uploadTempDir(uploadId);
@@ -882,8 +890,8 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
     await publishCurrentMaster(`[master] update varian ${actualResolution}p`);
   };
 
-  await appendEncodingLog(uploadId, `[v2] proses resolusi parallel=${variantConcurrency()}`);
-  await runLimited(RESOLUTIONS, variantConcurrency(), handleResolution);
+  await appendEncodingLog(uploadId, `[v2] proses resolusi parallel=${parallel}`);
+  await runLimited(RESOLUTIONS, parallel, handleResolution);
   await masterPublish;
 
   await assertNotCancelled(uploadId);

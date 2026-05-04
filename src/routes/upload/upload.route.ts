@@ -657,6 +657,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       episodeId?: number | string;
       youtubeUrl?: string;
       flow?: string;
+      variantConcurrency?: number | string;
     };
 
     const sesid = typeof body.sesid === "string" ? body.sesid.trim() : "";
@@ -675,6 +676,13 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       throw badRequest("URL YouTube tidak valid");
     }
     const flow = body.flow === "v2" ? "v2" : "v1";
+    const variantConcurrency = Number(body.variantConcurrency);
+    const safeVariantConcurrency =
+      flow === "v2" && [2, 4].includes(variantConcurrency)
+        ? variantConcurrency
+        : flow === "v2"
+          ? 2
+          : undefined;
 
     const episode = await prisma.episode.findUnique({
       where: { id: episodeId },
@@ -705,8 +713,13 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
       fileName: youtubeUrl,
       errorMessage: null,
     });
-    await appendEncodingLog(session.id, `Session YDWN dibuat (${flow.toUpperCase()})`);
-    await enqueueYoutubeR2Upload(session.id, youtubeUrl, flow);
+    await appendEncodingLog(
+      session.id,
+      `Session YDWN dibuat (${flow.toUpperCase()}${
+        safeVariantConcurrency ? ` parallel ${safeVariantConcurrency}` : ""
+      })`,
+    );
+    await enqueueYoutubeR2Upload(session.id, youtubeUrl, flow, safeVariantConcurrency);
 
     const queued = await getUploadSession(session.id);
     return created(reply, {
