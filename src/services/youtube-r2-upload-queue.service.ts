@@ -106,9 +106,25 @@ function videoFormatSelector(resolution: number) {
     `bv*[height=${resolution}][ext=mp4][vcodec^=avc1]`,
     `bv*[height=${resolution}][ext=mp4]`,
     `bv*[height=${resolution}]`,
+    `bv*[height<=${resolution}][height>=${Math.max(1, resolution - 24)}][ext=mp4][vcodec^=avc1]`,
+    `bv*[height<=${resolution}][height>=${Math.max(1, resolution - 24)}][ext=mp4]`,
+    `bv*[height<=${resolution}][height>=${Math.max(1, resolution - 24)}]`,
     `b[height=${resolution}][ext=mp4]`,
     `b[height=${resolution}]`,
   ].join("/");
+}
+
+function audioFormatSelectors() {
+  return [
+    "ba[ext=m4a]/ba[acodec^=mp4a]/ba",
+    "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
+    "ba*",
+  ];
+}
+
+function isRequestedFormatUnavailable(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Requested format is not available/i.test(message);
 }
 
 function cancelKey(uploadId: string) {
@@ -211,38 +227,47 @@ async function downloadAudio(input: {
   const cookies = await youtubeCookiesStatus();
   const cookieArgs = cookies.exists ? ["--cookies", cookies.path] : [];
 
-  await appendEncodingLog(input.uploadId, "[audio] yt-dlp download m4a");
   let lastProgress = 0;
-  await runProcess({
-    uploadId: input.uploadId,
-    command: command.file,
-    args: [
-      ...command.args,
-      ...cookieArgs,
-      ...ytDlpJsRuntimeArgs(),
-      ...ytDlpRemoteComponentArgs(),
-      "--no-playlist",
-      "--newline",
-      "-f",
-      "ba[ext=m4a]/ba[acodec^=mp4a]/ba",
-      "-o",
-      path.join(input.outputDir, "audio.%(ext)s"),
-      input.youtubeUrl,
-    ],
-    timeoutMs: DOWNLOAD_TIMEOUT_MS,
-    onStdout: (text) => {
-      const match = text.match(/\[download]\s+([0-9.]+)%/);
-      if (!match) return;
-      const progress = Math.floor(Number(match[1]));
-      if (Number.isFinite(progress) && progress >= lastProgress + 10) {
-        lastProgress = progress;
-        void updateSessionStatus(input.uploadId, {
-          currentResolution: 0,
-          uploadProgress: Math.min(99, progress),
-        });
-      }
-    },
-  });
+
+  for (const selector of audioFormatSelectors()) {
+    await appendEncodingLog(input.uploadId, `[audio] yt-dlp download (${selector})`);
+    try {
+      await runProcess({
+        uploadId: input.uploadId,
+        command: command.file,
+        args: [
+          ...command.args,
+          ...cookieArgs,
+          ...ytDlpJsRuntimeArgs(),
+          ...ytDlpRemoteComponentArgs(),
+          "--no-playlist",
+          "--newline",
+          "-f",
+          selector,
+          "-o",
+          path.join(input.outputDir, "audio.%(ext)s"),
+          input.youtubeUrl,
+        ],
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        onStdout: (text) => {
+          const match = text.match(/\[download]\s+([0-9.]+)%/);
+          if (!match) return;
+          const progress = Math.floor(Number(match[1]));
+          if (Number.isFinite(progress) && progress >= lastProgress + 10) {
+            lastProgress = progress;
+            void updateSessionStatus(input.uploadId, {
+              currentResolution: 0,
+              uploadProgress: Math.min(99, progress),
+            });
+          }
+        },
+      });
+      break;
+    } catch (error) {
+      if (!isRequestedFormatUnavailable(error)) throw error;
+      await appendEncodingLog(input.uploadId, `[audio] format tidak tersedia, coba fallback`, "warn");
+    }
+  }
 
   return findDownloadedAudio(input.outputDir);
 }
