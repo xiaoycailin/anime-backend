@@ -8,7 +8,7 @@ import { youtubeCookiesStatus } from "./youtube-cookies.service";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_LANGUAGES = ["id", "en", "ms"];
-const YT_DLP_TIMEOUT_MS = 60_000;
+const YT_DLP_TIMEOUT_MS = 180_000;
 const YT_DLP_COOLDOWN_MS = 60 * 60 * 1000;
 
 const cooldownByVideo = new Map<string, number>();
@@ -31,6 +31,11 @@ type ImportResult = {
   attempted: boolean;
   available: boolean;
   imported: ImportedTrack[];
+  message?: string;
+};
+
+type YtDlpRunResult = {
+  ok: boolean;
   message?: string;
 };
 
@@ -92,38 +97,61 @@ function subtitleLabel(language: string) {
   return labels[language] ?? language.toUpperCase();
 }
 
-async function runYtDlp(url: string, tempDir: string, languages: string[]) {
+function commandErrorMessage(error: unknown) {
+  if (!(error instanceof Error)) return "yt-dlp gagal dijalankan";
+  const output = [
+    (error as { stderr?: string }).stderr,
+    (error as { stdout?: string }).stdout,
+    error.message,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return output || error.message;
+}
+
+async function runYtDlp(
+  url: string,
+  tempDir: string,
+  languages: string[],
+): Promise<YtDlpRunResult> {
   const command = ytDlpCommand();
   const cookies = await youtubeCookiesStatus();
   const cookieArgs = cookies.exists ? ["--cookies", cookies.path] : [];
 
-  await execFileAsync(
-    command.file,
-    [
-      ...command.args,
-      ...cookieArgs,
-      ...ytDlpJsRuntimeArgs(),
-      ...ytDlpRemoteComponentArgs(),
-      "--ignore-no-formats-error",
-      "--skip-download",
-      "--write-subs",
-      "--write-auto-subs",
-      "--sub-format",
-      "vtt",
-      "--sub-langs",
-      languages.length > 0 ? languages.join(",") : "all",
-      "--paths",
-      tempDir,
-      "-o",
-      "subtitle.%(ext)s",
-      url,
-    ],
-    {
-      timeout: YT_DLP_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-      windowsHide: true,
-    },
-  );
+  try {
+    await execFileAsync(
+      command.file,
+      [
+        ...command.args,
+        ...cookieArgs,
+        ...ytDlpJsRuntimeArgs(),
+        ...ytDlpRemoteComponentArgs(),
+        "--no-warnings",
+        "--ignore-no-formats-error",
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-format",
+        "vtt",
+        "--sub-langs",
+        languages.length > 0 ? languages.join(",") : "all",
+        "--paths",
+        tempDir,
+        "-o",
+        "subtitle.%(ext)s",
+        url,
+      ],
+      {
+        timeout: YT_DLP_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: commandErrorMessage(error).slice(-1800) };
+  }
 }
 
 function languageFromFileName(fileName: string) {
@@ -164,7 +192,7 @@ export async function importYouTubeSubtitlesWithYtDlp(
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "weebin-yt-subs-"));
 
   try {
-    await runYtDlp(input.serverUrl, tempDir, languages);
+    const run = await runYtDlp(input.serverUrl, tempDir, languages);
     const files = (await fs.readdir(tempDir)).filter((file) => file.endsWith(".vtt"));
     const imported: ImportedTrack[] = [];
 
@@ -192,16 +220,17 @@ export async function importYouTubeSubtitlesWithYtDlp(
 
     return {
       attempted: true,
-      available: true,
+      available: imported.length > 0,
       imported,
       message:
         imported.length > 0
           ? `${imported.length} subtitle YouTube diimport`
-          : "yt-dlp jalan, tapi tidak ada cue subtitle yang valid",
+          : run.ok
+            ? "yt-dlp jalan, tapi tidak ada cue subtitle yang valid"
+            : `yt-dlp belum menghasilkan subtitle valid: ${run.message}`,
     };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "yt-dlp gagal dijalankan";
+    const message = commandErrorMessage(error);
     if (videoId && /(429|too many requests|not a bot|confirm)/i.test(message)) {
       cooldownByVideo.set(videoId, Date.now() + YT_DLP_COOLDOWN_MS);
     }
