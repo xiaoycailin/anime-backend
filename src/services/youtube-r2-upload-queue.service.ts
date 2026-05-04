@@ -377,9 +377,21 @@ async function uploadFolder(input: {
       : entry.endsWith(".m4s")
         ? "video/iso.segment"
         : "video/mp4";
+    let body: Buffer;
+    try {
+      body = await fs.readFile(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `[${label}] file temp hilang saat upload R2: ${entry}. ` +
+            "Job harus diulang karena file lokal sudah dibersihkan.",
+        );
+      }
+      throw error;
+    }
     await uploadStreamingObject({
       key: `${input.keyPrefix}/${entry}`,
-      body: await fs.readFile(filePath),
+      body,
       contentType,
       cacheControl: entry.endsWith(".m3u8")
         ? "public, max-age=60"
