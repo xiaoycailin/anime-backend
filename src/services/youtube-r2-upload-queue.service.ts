@@ -34,7 +34,10 @@ const activeChildren = new Map<string, Set<ChildProcessWithoutNullStreams>>();
 type YoutubeR2JobData = {
   uploadId: string;
   youtubeUrl: string;
+  flow?: YoutubeR2Flow;
 };
+
+type YoutubeR2Flow = "v1" | "v2";
 
 type Variant = {
   resolution: number;
@@ -78,8 +81,18 @@ function workerConcurrency() {
   return Math.min(5, Math.max(1, Math.floor(value)));
 }
 
+function variantConcurrency() {
+  const value = Number(process.env.YOUTUBE_R2_VARIANT_CONCURRENCY ?? 2);
+  if (!Number.isFinite(value)) return 2;
+  return Math.min(4, Math.max(1, Math.floor(value)));
+}
+
 function isYouTubeUrl(value: string) {
   return /(?:youtube\.com\/watch|youtu\.be\/)/i.test(value);
+}
+
+function normalizeFlow(value: unknown): YoutubeR2Flow {
+  return value === "v2" ? "v2" : "v1";
 }
 
 function videoFormatSelector(resolution: number) {
@@ -332,6 +345,7 @@ async function uploadFolder(input: {
   keyPrefix: string;
   uploadId: string;
   resolution: number;
+  onProgress?: (uploaded: number, total: number) => Promise<void>;
 }) {
   const entries = await fs.readdir(input.localDir);
   const files: string[] = [];
@@ -340,6 +354,11 @@ async function uploadFolder(input: {
     const stat = await fs.stat(filePath);
     if (stat.isFile()) files.push(entry);
   }
+  files.sort((a, b) => {
+    if (a.endsWith(".m3u8") && !b.endsWith(".m3u8")) return 1;
+    if (!a.endsWith(".m3u8") && b.endsWith(".m3u8")) return -1;
+    return a.localeCompare(b);
+  });
 
   let uploaded = 0;
   const label = input.resolution > 0 ? `${input.resolution}p` : "audio";
@@ -381,6 +400,7 @@ async function uploadFolder(input: {
         input.uploadId,
         `[${label}] R2 ${uploaded}/${files.length} file`,
       );
+      await input.onProgress?.(uploaded, files.length);
     }
   }
 }
@@ -402,6 +422,37 @@ function buildMasterPlaylist(variants: Variant[], hasAudio: boolean) {
   return `${lines.join("\n")}\n`;
 }
 
+async function publishMasterPlaylist(input: {
+  masterKey: string;
+  variants: Variant[];
+  hasAudio: boolean;
+}) {
+  await uploadStreamingObject({
+    key: input.masterKey,
+    body: Buffer.from(buildMasterPlaylist([...input.variants], input.hasAudio), "utf8"),
+    contentType: "application/vnd.apple.mpegurl",
+    cacheControl: "public, max-age=30",
+  });
+}
+
+async function runLimited<T>(
+  items: T[],
+  concurrency: number,
+  workerFn: (item: T) => Promise<void>,
+) {
+  const queueItems = [...items];
+  const workers = Array.from(
+    { length: Math.min(concurrency, queueItems.length) },
+    async () => {
+      while (queueItems.length > 0) {
+        const item = queueItems.shift();
+        if (item !== undefined) await workerFn(item);
+      }
+    },
+  );
+  await Promise.all(workers);
+}
+
 let queue: Queue<YoutubeR2JobData> | null = null;
 let worker: Worker<YoutubeR2JobData> | null = null;
 
@@ -419,14 +470,22 @@ export function getYoutubeR2UploadQueue() {
   return queue;
 }
 
-export async function enqueueYoutubeR2Upload(uploadId: string, youtubeUrl: string) {
+export async function enqueueYoutubeR2Upload(
+  uploadId: string,
+  youtubeUrl: string,
+  flow: YoutubeR2Flow = "v1",
+) {
   if (!isYouTubeUrl(youtubeUrl)) throw new Error("URL YouTube tidak valid");
   const session = await getUploadSession(uploadId);
   if (!session) throw new Error("Upload session tidak ditemukan");
 
   await redis.del(cancelKey(uploadId));
-  await appendEncodingLog(uploadId, "YDWN upload job masuk queue");
-  return getYoutubeR2UploadQueue().add("import", { uploadId, youtubeUrl }, { jobId: uploadId });
+  await appendEncodingLog(uploadId, `YDWN upload job masuk queue (${flow.toUpperCase()})`);
+  return getYoutubeR2UploadQueue().add(
+    "import",
+    { uploadId, youtubeUrl, flow },
+    { jobId: uploadId },
+  );
 }
 
 export async function cancelYoutubeR2Upload(uploadId: string) {
@@ -447,6 +506,12 @@ export async function cancelYoutubeR2Upload(uploadId: string) {
 }
 
 async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
+  const flow = normalizeFlow(job.data.flow);
+  if (flow === "v2") return processYoutubeJobV2(job);
+  return processYoutubeJobV1(job);
+}
+
+async function processYoutubeJobV1(job: Job<YoutubeR2JobData>) {
   const { uploadId, youtubeUrl } = job.data;
   const session = await getUploadSession(uploadId);
   if (!session) throw new Error("Upload session tidak ditemukan");
@@ -597,6 +662,218 @@ async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
   });
 
   await appendEncodingLog(uploadId, "Import semua subtitle YouTube");
+  const subtitles = await importYouTubeSubtitlesWithYtDlp({
+    episodeId: session.episodeId,
+    serverUrl: youtubeUrl,
+    targetServerUrl: masterUrl,
+  });
+  const subtitleMessage = subtitles.message ?? "Subtitle import selesai";
+  await appendEncodingLog(
+    uploadId,
+    subtitleMessage,
+    subtitles.imported.length > 0 ? "info" : "warn",
+  );
+  if (subtitles.imported.length > 0) {
+    await appendEncodingLog(
+      uploadId,
+      `Subtitle tersimpan: ${subtitles.imported
+        .map((track) => `${track.language} (${track.cueCount})`)
+        .join(", ")}`,
+    );
+  }
+  await updateSessionStatus(uploadId, { status: "completed" });
+  await appendEncodingLog(uploadId, "YDWN R2 upload selesai");
+  await redis.del(cancelKey(uploadId));
+  await expireSessionImmediately(uploadId);
+  await cleanupUploadTempDir(uploadId);
+
+  return { masterUrl, resolutions: variants.map((item) => item.resolution), videoId, subtitles };
+}
+
+async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
+  const { uploadId, youtubeUrl } = job.data;
+  const session = await getUploadSession(uploadId);
+  if (!session) throw new Error("Upload session tidak ditemukan");
+
+  const videoId = session.videoId ?? generateVideoId();
+  const tempDir = uploadTempDir(uploadId);
+  const masterKey = `videos/${videoId}/master.m3u8`;
+  const masterUrl = getStreamingPublicUrl(masterKey);
+  const variants: Variant[] = [];
+  let hasAudio = false;
+  let masterPublish = Promise.resolve();
+  let lastPeriodicPublish = 0;
+
+  const publishCurrentMaster = async (logMessage?: string) => {
+    masterPublish = masterPublish.then(async () => {
+      await publishMasterPlaylist({ masterKey, variants, hasAudio });
+      if (logMessage) await appendEncodingLog(uploadId, logMessage);
+    });
+    await masterPublish;
+  };
+
+  const maybePublishPeriodicMaster = async () => {
+    const now = Date.now();
+    if (now - lastPeriodicPublish < 15_000) return;
+    lastPeriodicPublish = now;
+    await publishCurrentMaster();
+  };
+
+  await updateSessionStatus(uploadId, {
+    status: "processing",
+    videoId,
+    fileName: youtubeUrl,
+    masterPlaylistUrl: masterUrl,
+    uploadProgress: 0,
+    encodingProgress: 0,
+    r2UploadProgress: 0,
+    receivedChunks: 0,
+    totalChunks: null,
+    currentResolution: null,
+    errorMessage: null,
+  });
+  await publishCurrentMaster("[master] placeholder dibuat");
+  await setEpisodeR2Server({ episodeId: session.episodeId, masterUrl });
+  await appendEncodingLog(uploadId, "[master] linked ke episode sebelum varian selesai");
+
+  await assertNotCancelled(uploadId);
+  await updateSessionStatus(uploadId, { currentResolution: 0 });
+  const audioPath = await downloadAudio({ uploadId, youtubeUrl, outputDir: tempDir }).catch(
+    async (error) => {
+      await appendEncodingLog(
+        uploadId,
+        `[audio] skip audio terpisah: ${error instanceof Error ? error.message : String(error)}`,
+        "warn",
+      );
+      return null;
+    },
+  );
+
+  await assertNotCancelled(uploadId);
+  if (audioPath) {
+    const audioDir = path.join(tempDir, "hls", "audio");
+    await updateSessionStatus(uploadId, {
+      currentResolution: 0,
+      encodingProgress: 0,
+      receivedChunks: 0,
+      totalChunks: null,
+    });
+    await remuxToHls({
+      uploadId,
+      sourcePath: audioPath,
+      outputDir: audioDir,
+      label: "audio",
+      media: "audio",
+    });
+    await updateSessionStatus(uploadId, { currentResolution: 0, encodingProgress: 100 });
+    await uploadFolder({
+      localDir: audioDir,
+      keyPrefix: `videos/${videoId}/audio`,
+      uploadId,
+      resolution: 0,
+      onProgress: maybePublishPeriodicMaster,
+    });
+    hasAudio = true;
+    await publishCurrentMaster("[master] audio track masuk playlist");
+  }
+
+  const handleResolution = async (resolution: number) => {
+    await assertNotCancelled(uploadId);
+    await updateSessionStatus(uploadId, { currentResolution: resolution });
+    let sourcePath: string | null = null;
+    try {
+      sourcePath = await downloadVideoVariant({ uploadId, youtubeUrl, outputDir: tempDir, resolution });
+    } catch (error) {
+      await appendEncodingLog(
+        uploadId,
+        `[${resolution}p] skip: ${error instanceof Error ? error.message : String(error)}`,
+        "warn",
+      );
+      return;
+    }
+    if (!sourcePath) return;
+
+    await assertNotCancelled(uploadId);
+    const probe = await probeVideo(sourcePath);
+    if (!probe.durationSec || !probe.height) return;
+    const possibleResolutions = RESOLUTIONS.filter((res) => res <= probe.height);
+    const actualResolution = possibleResolutions[possibleResolutions.length - 1] ?? resolution;
+    if (variants.some((variant) => variant.resolution === actualResolution)) {
+      await appendEncodingLog(uploadId, `[${resolution}p] duplicate ${actualResolution}p, skip`, "warn");
+      return;
+    }
+
+    const outputDir = path.join(tempDir, "hls", `${actualResolution}p`);
+    await updateSessionStatus(uploadId, {
+      currentResolution: actualResolution,
+      encodingProgress: 0,
+      receivedChunks: 0,
+      totalChunks: null,
+    });
+    await remuxToHls({
+      uploadId,
+      sourcePath,
+      outputDir,
+      label: `${actualResolution}p`,
+      media: "video",
+      includeAudio: !hasAudio,
+    });
+    await updateSessionStatus(uploadId, {
+      currentResolution: actualResolution,
+      encodingProgress: 100,
+    });
+    await uploadFolder({
+      localDir: outputDir,
+      keyPrefix: `videos/${videoId}/${actualResolution}p`,
+      uploadId,
+      resolution: actualResolution,
+      onProgress: maybePublishPeriodicMaster,
+    });
+    await assertNotCancelled(uploadId);
+
+    const stat = await fs.stat(sourcePath);
+    const bandwidth = Math.max(128_000, Math.ceil((stat.size * 8) / probe.durationSec));
+    if (!variants.some((variant) => variant.resolution === actualResolution)) {
+      variants.push({
+        resolution: actualResolution,
+        width: probe.width,
+        height: probe.height,
+        bandwidth,
+      });
+    }
+    const progress = Math.min(
+      99,
+      Number(((variants.length / RESOLUTIONS.length) * 100).toFixed(2)),
+    );
+    await updateSessionStatus(uploadId, {
+      uploadProgress: progress,
+      encodingProgress: progress,
+      r2UploadProgress: progress,
+      receivedChunks: 0,
+      totalChunks: null,
+      resolutionsDone: variants.map((variant) => variant.resolution).sort((a, b) => a - b),
+    });
+    await publishCurrentMaster(`[master] update varian ${actualResolution}p`);
+  };
+
+  await appendEncodingLog(uploadId, `[v2] proses resolusi parallel=${variantConcurrency()}`);
+  await runLimited(RESOLUTIONS, variantConcurrency(), handleResolution);
+  await masterPublish;
+
+  await assertNotCancelled(uploadId);
+  if (variants.length === 0) throw new Error("Tidak ada format YouTube yang berhasil didownload");
+  await publishCurrentMaster("[master] final playlist dipublish");
+  await updateSessionStatus(uploadId, {
+    masterPlaylistUrl: masterUrl,
+    uploadProgress: 100,
+    encodingProgress: 100,
+    r2UploadProgress: 100,
+    currentResolution: null,
+    receivedChunks: 0,
+    totalChunks: null,
+  });
+
+  await appendEncodingLog(uploadId, "Import subtitle YouTube pilihan");
   const subtitles = await importYouTubeSubtitlesWithYtDlp({
     episodeId: session.episodeId,
     serverUrl: youtubeUrl,
