@@ -287,6 +287,10 @@ async function remuxToHls(input: {
       : input.includeAudio
         ? ["-map", "0:v:0", "-map", "0:a:0?"]
         : ["-map", "0:v:0", "-an"];
+  const audioCopyArgs =
+    input.media === "audio" || input.includeAudio
+      ? ["-bsf:a", "aac_adtstoasc"]
+      : [];
   await runProcess({
     uploadId: input.uploadId,
     command: FFMPEG_BIN,
@@ -297,6 +301,7 @@ async function remuxToHls(input: {
       ...mapArgs,
       "-c",
       "copy",
+      ...audioCopyArgs,
       "-hls_time",
       String(COPY_HLS_TIME),
       "-hls_playlist_type",
