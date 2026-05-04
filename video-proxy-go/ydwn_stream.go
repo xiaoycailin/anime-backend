@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var ydwnQualityRank = map[string]int{"FHD": 0, "HD": 1, "SD": 2}
+var ydwnQualityRank = map[string]int{"SD": 0, "HD": 1, "FHD": 2}
 
 func (a *app) serveYdwn(w http.ResponseWriter, r *http.Request) {
 	switch strings.TrimPrefix(r.URL.Path, ydwnBasePath) {
