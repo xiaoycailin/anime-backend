@@ -16,7 +16,9 @@ const cooldownByVideo = new Map<string, number>();
 type ImportInput = {
   episodeId: number;
   serverUrl: string;
+  targetServerUrl?: string;
   languages?: string[];
+  allLanguages?: boolean;
 };
 
 type ImportedTrack = {
@@ -55,6 +57,11 @@ function ytDlpJsRuntimeArgs() {
 
   const nodePath = process.env.YT_DLP_NODE_PATH?.trim() || process.execPath;
   return nodePath ? ["--js-runtimes", `node:${nodePath}`] : [];
+}
+
+function ytDlpRemoteComponentArgs() {
+  const value = process.env.YT_DLP_REMOTE_COMPONENTS?.trim() || "ejs:github";
+  return value ? ["--remote-components", value] : [];
 }
 
 function cleanLanguage(value: string) {
@@ -96,6 +103,7 @@ async function runYtDlp(url: string, tempDir: string, languages: string[]) {
       ...command.args,
       ...cookieArgs,
       ...ytDlpJsRuntimeArgs(),
+      ...ytDlpRemoteComponentArgs(),
       "--ignore-no-formats-error",
       "--skip-download",
       "--write-subs",
@@ -103,7 +111,7 @@ async function runYtDlp(url: string, tempDir: string, languages: string[]) {
       "--sub-format",
       "vtt",
       "--sub-langs",
-      languages.join(","),
+      languages.length > 0 ? languages.join(",") : "all",
       "--paths",
       tempDir,
       "-o",
@@ -142,11 +150,17 @@ export async function importYouTubeSubtitlesWithYtDlp(
     };
   }
 
-  const requestedLanguages =
-    input.languages?.length ? input.languages : configuredLanguages();
-  const languages = (requestedLanguages.length ? requestedLanguages : DEFAULT_LANGUAGES)
-    .map(cleanLanguage)
-    .filter(Boolean);
+  const requestedLanguages = input.allLanguages
+    ? []
+    : input.languages?.length
+      ? input.languages
+      : configuredLanguages();
+  const languages = input.allLanguages
+    ? []
+    : (requestedLanguages.length ? requestedLanguages : DEFAULT_LANGUAGES)
+        .map(cleanLanguage)
+        .filter(Boolean);
+  const targetServerUrl = input.targetServerUrl?.trim() || input.serverUrl;
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "weebin-yt-subs-"));
 
   try {
@@ -164,7 +178,7 @@ export async function importYouTubeSubtitlesWithYtDlp(
 
       const track = await createSubtitleTrack({
         episodeId: input.episodeId,
-        serverUrl: input.serverUrl,
+        serverUrl: targetServerUrl,
         language,
         label: subtitleLabel(language),
       });

@@ -25,6 +25,7 @@ import {
   uploadTempDir,
   VALID_RESOLUTIONS,
   cleanupUploadTempDir,
+  deleteUploadSession,
   publishUploadEvent,
   type UrlSourceInput,
   type UrlSourceProgress,
@@ -32,12 +33,18 @@ import {
 import {
   enqueueEncoding,
   generateVideoId,
+  getEncodingQueue,
   reconcileEncodingJobForSession,
 } from "../../services/video-pipeline.service";
 import {
   enqueueUrlUpload,
+  getUrlUploadQueue,
   prepareUrlUploadSession,
 } from "../../services/url-upload-queue.service";
+import {
+  cancelYoutubeR2Upload,
+  enqueueYoutubeR2Upload,
+} from "../../services/youtube-r2-upload-queue.service";
 import { importSubtitleFile } from "../../services/subtitle.service";
 import {
   clearPlaylistCache,
@@ -54,6 +61,7 @@ import {
   rememberPlaylist,
   setUrlSourceStatus,
 } from "../../services/url-ingest.service";
+import { deleteStreamingVideo } from "../../utils/r2-streaming";
 import { createRedisSubscriber } from "../../lib/redis";
 
 const MAX_CHUNK_SIZE = 20 * 1024 * 1024;
@@ -154,6 +162,55 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
         receivedChunks: receivedChunks.length,
         receivedChunkIndexes: receivedChunks,
         encodingLogs,
+      },
+    });
+  });
+
+  app.post("/:uploadId/stop", async (request, reply) => {
+    const { uploadId } = request.params as { uploadId: string };
+    const session = await getUploadSession(uploadId);
+    if (!session) throw notFound("Upload session tidak ditemukan");
+
+    const cleanup: {
+      youtube?: Awaited<ReturnType<typeof cancelYoutubeR2Upload>>;
+      encodingJobState?: string | null;
+      urlJobState?: string | null;
+      r2DeletedCount: number;
+    } = {
+      r2DeletedCount: 0,
+    };
+
+    if (session.mode === "youtube") {
+      cleanup.youtube = await cancelYoutubeR2Upload(uploadId);
+    }
+
+    const encodingJob = await getEncodingQueue().getJob(uploadId).catch(() => null);
+    cleanup.encodingJobState = await encodingJob?.getState().catch(() => "unknown") ?? null;
+    if (encodingJob && cleanup.encodingJobState !== "active") {
+      await encodingJob.remove().catch(() => undefined);
+    }
+
+    const urlJob = await getUrlUploadQueue().getJob(uploadId).catch(() => null);
+    cleanup.urlJobState = await urlJob?.getState().catch(() => "unknown") ?? null;
+    if (urlJob && cleanup.urlJobState !== "active") {
+      await urlJob.remove().catch(() => undefined);
+    }
+
+    if (session.videoId) {
+      const deleted = await deleteStreamingVideo(session.videoId).catch(() => null);
+      cleanup.r2DeletedCount = deleted?.deletedCount ?? 0;
+    }
+
+    await cleanupUploadTempDir(uploadId);
+    await deleteUploadSession(uploadId);
+
+    return ok(reply, {
+      message: "Upload session dihentikan dan cleanup selesai",
+      data: {
+        uploadId,
+        mode: session.mode,
+        videoId: session.videoId,
+        ...cleanup,
       },
     });
   });
@@ -592,6 +649,68 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
         error instanceof Error ? error.message : "Gagal fetch playlist";
       throw badRequest(message);
     }
+  });
+
+  app.post("/youtube-session", async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      sesid?: string;
+      episodeId?: number | string;
+      youtubeUrl?: string;
+    };
+
+    const sesid = typeof body.sesid === "string" ? body.sesid.trim() : "";
+    let episodeId = Number(body.episodeId);
+    if (!Number.isFinite(episodeId) || episodeId <= 0) {
+      const match = sesid.match(/(\d+)/);
+      if (match) episodeId = Number(match[1]);
+    }
+    if (!Number.isFinite(episodeId) || episodeId <= 0) {
+      throw badRequest("episodeId tidak valid");
+    }
+
+    const youtubeUrl =
+      typeof body.youtubeUrl === "string" ? body.youtubeUrl.trim() : "";
+    if (!/(?:youtube\.com\/watch|youtu\.be\/)/i.test(youtubeUrl)) {
+      throw badRequest("URL YouTube tidak valid");
+    }
+
+    const episode = await prisma.episode.findUnique({
+      where: { id: episodeId },
+      select: { id: true },
+    });
+    if (!episode) throw notFound("Episode tidak ditemukan");
+
+    const active = await findActiveSessionForEpisode(episodeId);
+    if (
+      active &&
+      active.mode === "youtube" &&
+      active.fileName === youtubeUrl
+    ) {
+      return ok(reply, {
+        message: "Resume YDWN session aktif",
+        data: serializeSession(active),
+      });
+    }
+
+    const session = await createUploadSession({
+      episodeId,
+      sesid: sesid || null,
+      initialResolution: 1080,
+      mode: "youtube",
+    });
+    await updateSessionStatus(session.id, {
+      status: "processing",
+      fileName: youtubeUrl,
+      errorMessage: null,
+    });
+    await appendEncodingLog(session.id, "Session YDWN dibuat");
+    await enqueueYoutubeR2Upload(session.id, youtubeUrl);
+
+    const queued = await getUploadSession(session.id);
+    return created(reply, {
+      message: "YDWN upload session queued",
+      data: serializeSession(queued ?? session),
+    });
   });
 
   app.post("/:uploadId/url-playlist", async (request, reply) => {

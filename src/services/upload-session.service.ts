@@ -23,7 +23,7 @@ export type UploadSessionStatus =
   | "failed"
   | "expired";
 
-export type UploadSessionMode = "file" | "url";
+export type UploadSessionMode = "file" | "url" | "youtube";
 
 export type UrlSourceInput = {
   resolution: number;
@@ -328,12 +328,21 @@ export async function clearEncodingLogs(uploadId: string) {
   }
 }
 
+export async function deleteUploadSession(uploadId: string) {
+  await redis.del(redisSessionKey(uploadId));
+  await clearChunkSet(uploadId);
+  await clearEncodingLogs(uploadId);
+  await (prisma as any).uploadSession.delete({
+    where: { id: uploadId },
+  }).catch(() => undefined);
+}
+
 export async function updateSessionStatus(
   uploadId: string,
   data: {
     status?: UploadSessionStatus;
     mode?: UploadSessionMode;
-    totalChunks?: number;
+    totalChunks?: number | null;
     receivedChunks?: number;
     uploadProgress?: number;
     encodingProgress?: number;

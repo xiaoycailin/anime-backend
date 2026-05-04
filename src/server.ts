@@ -7,6 +7,7 @@ import { startTrendingRefreshJob } from "./services/trending.service";
 import { startReminderJob } from "./jobs/reminder.job";
 import { startEncodingWorker } from "./services/video-pipeline.service";
 import { startUrlUploadWorker } from "./services/url-upload-queue.service";
+import { startYoutubeR2UploadWorker } from "./services/youtube-r2-upload-queue.service";
 import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
 import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
 import { closeRedis, redis, isRedisReady } from "./lib/redis";
@@ -20,6 +21,7 @@ function startRedisDependentJobs() {
   redisDependentJobsStarted = true;
   startEncodingWorker();
   startUrlUploadWorker();
+  startYoutubeR2UploadWorker();
   startChatCleanupJob({
     info: (msg) => app.log.info(msg),
     error: (msg, err) => app.log.error({ err }, msg),

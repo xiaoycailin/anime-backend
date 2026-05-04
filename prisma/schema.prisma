@@ -745,6 +745,7 @@ enum UploadSessionStatus {
 enum UploadSessionMode {
   file
   url
+  youtube
 }
 
 model UploadSession {
