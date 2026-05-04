@@ -49,6 +49,7 @@ type captionTrack struct {
 	Name         string
 	BaseURL      string
 	IsASR        bool
+	IsDefault    bool
 }
 
 type timedCacheEntry struct {

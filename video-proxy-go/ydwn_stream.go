@@ -49,23 +49,39 @@ func (a *app) ydwnCaptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCaptionPot(videoID, r.URL.Query().Get("pot"))
-	pot := captionPot(videoID)
+	pots := captionPots(videoID)
 	base := ydwnBaseURL(r)
 	tracks := a.fetchYouTubeCaptions(r.Context(), videoID)
 	data := []map[string]string{}
+	fallbackData := []map[string]string{}
 	for _, track := range tracks {
 		label := track.Name
 		if track.IsASR {
 			label += " (auto)"
 		}
-		captionURL := withCaptionClientParams(track.BaseURL, pot)
+		fallbackURL := firstCaptionURLCandidate(track.BaseURL, pots)
+		if fallbackURL != "" {
+			fallbackData = append(fallbackData, map[string]string{
+				"label": label,
+				"lang":  track.LanguageCode,
+				"src":   base + "/subtitle-vtt?t=" + encodeYdwnToken(fallbackURL),
+			})
+		}
+
+		captionURL, ok := a.resolveCaptionURL(r.Context(), track.BaseURL, pots)
+		if !ok {
+			continue
+		}
 		data = append(data, map[string]string{
 			"label": label,
 			"lang":  track.LanguageCode,
 			"src":   base + "/subtitle-vtt?t=" + encodeYdwnToken(captionURL),
 		})
 	}
-	writeJSON(w, map[string]interface{}{"data": data}, "no-store")
+	if len(data) == 0 {
+		data = fallbackData
+	}
+	writeJSON(w, map[string]interface{}{"data": data}, "public, max-age=300")
 }
 
 func (a *app) ydwnPlaylist(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +154,7 @@ func (a *app) ydwnPlaylist(w http.ResponseWriter, r *http.Request) {
 			base+"/media-playlist?t="+meta.Token,
 		)
 	}
-	writeText(w, "application/vnd.apple.mpegurl", "no-store", strings.Join(lines, "\n"))
+	writeText(w, "application/vnd.apple.mpegurl", "public, max-age=300", strings.Join(lines, "\n"))
 }
 
 func (a *app) ydwnMediaPlaylist(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +176,7 @@ func (a *app) ydwnMediaPlaylist(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeText(w, "application/vnd.apple.mpegurl", "no-store", buildYdwnMediaPlaylist(r, meta))
+	writeText(w, "application/vnd.apple.mpegurl", "public, max-age=3600", buildYdwnMediaPlaylist(r, meta))
 }
 
 func (a *app) ydwnSubtitlePlaylist(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +196,7 @@ func (a *app) ydwnSubtitlePlaylist(w http.ResponseWriter, r *http.Request) {
 		base + "/subtitle-vtt?t=" + token,
 		"#EXT-X-ENDLIST",
 	}
-	writeText(w, "application/vnd.apple.mpegurl", "no-store", strings.Join(lines, "\n"))
+	writeText(w, "application/vnd.apple.mpegurl", "public, max-age=3600", strings.Join(lines, "\n"))
 }
 
 func (a *app) ydwnSubtitleVTT(w http.ResponseWriter, r *http.Request) {
@@ -191,9 +207,9 @@ func (a *app) ydwnSubtitleVTT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	videoID := captionVideoID(target)
-	content := a.fetchCaptionVTT(r.Context(), withCaptionClientParams(target, captionPot(videoID)))
+	content := a.fetchCaptionContent(r.Context(), target, captionPots(videoID))
 	if content == "" {
-		writeText(w, "text/vtt; charset=utf-8", "public, max-age=300", "WEBVTT\n\nNOTE Subtitle upstream returned empty cues\n")
+		writeText(w, "text/vtt; charset=utf-8", "public, max-age=300", "WEBVTT\n\n")
 		return
 	}
 	writeText(w, "text/vtt; charset=utf-8", "public, max-age=3600", content)
@@ -217,6 +233,54 @@ func (a *app) ydwnSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	streamResponse(w, upstream, firstNonEmpty(upstream.Header.Get("Content-Type"), "video/mp4"))
+}
+
+func (a *app) resolveCaptionURL(ctx context.Context, rawURL string, pots []string) (string, bool) {
+	for _, candidate := range captionURLCandidates(rawURL, pots) {
+		if a.fetchCaptionVTT(ctx, candidate) != "" {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func (a *app) fetchCaptionContent(ctx context.Context, rawURL string, pots []string) string {
+	for _, candidate := range captionURLCandidates(rawURL, pots) {
+		if content := a.fetchCaptionVTT(ctx, candidate); content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func captionURLCandidates(rawURL string, pots []string) []string {
+	values := []string{
+		withCaptionClientParams(rawURL, ""),
+	}
+	for _, pot := range pots {
+		if strings.TrimSpace(pot) != "" {
+			values = append(values, withCaptionClientParams(rawURL, pot))
+		}
+	}
+
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func firstCaptionURLCandidate(rawURL string, pots []string) string {
+	candidates := captionURLCandidates(rawURL, pots)
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
 }
 
 func (a *app) fetchYdwnItems(ctx context.Context, youtubeURL string) ([]ydwnMediaItem, error) {

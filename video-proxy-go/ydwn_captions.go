@@ -8,19 +8,21 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 func (a *app) fetchYouTubeCaptions(ctx context.Context, videoID string) []captionTrack {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.youtube.com/watch?v="+url.QueryEscape(videoID), nil)
+	pageURL := "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID) + "&hl=id"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return nil
 	}
 	req.Header.Set("User-Agent", fallbackUserAgent)
 	req.Header.Set("Accept", "text/html")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
 
 	res, err := a.client.Do(req)
 	if err != nil {
@@ -43,8 +45,9 @@ func (a *app) fetchYouTubeCaptions(ctx context.Context, videoID string) []captio
 	captions, _ := player["captions"].(map[string]interface{})
 	renderer, _ := captions["playerCaptionsTracklistRenderer"].(map[string]interface{})
 	rawTracks, _ := renderer["captionTracks"].([]interface{})
+	defaultTrackIndex := defaultCaptionTrackIndex(renderer)
 	tracks := make([]captionTrack, 0, len(rawTracks))
-	for _, item := range rawTracks {
+	for index, item := range rawTracks {
 		track, ok := item.(map[string]interface{})
 		if !ok {
 			continue
@@ -54,32 +57,30 @@ func (a *app) fetchYouTubeCaptions(ctx context.Context, videoID string) []captio
 			continue
 		}
 		lang, _ := track["languageCode"].(string)
-		name := lang
-		if nameObj, ok := track["name"].(map[string]interface{}); ok {
-			if simple, ok := nameObj["simpleText"].(string); ok && simple != "" {
-				name = simple
-			}
-		}
+		name := captionName(track, lang)
 		kind, _ := track["kind"].(string)
 		tracks = append(tracks, captionTrack{
 			LanguageCode: firstNonEmpty(lang, "und"),
 			Name:         firstNonEmpty(name, "Unknown"),
 			BaseURL:      baseURL,
 			IsASR:        kind == "asr",
+			IsDefault:    index == defaultTrackIndex,
 		})
 	}
+	sort.SliceStable(tracks, func(i, j int) bool {
+		return tracks[i].IsDefault && !tracks[j].IsDefault
+	})
 	return tracks
 }
 
 func extractPlayerResponse(page string) map[string]interface{} {
-	marker := "ytInitialPlayerResponse ="
-	start := strings.Index(page, marker)
-	if start < 0 {
+	match := regexp.MustCompile(`ytInitialPlayerResponse\s*=`).FindStringIndex(page)
+	if len(match) != 2 {
 		return nil
 	}
 	depth, objStart, objEnd := 0, -1, -1
 	inString, escape := false, false
-	for i := start + len(marker); i < len(page); i++ {
+	for i := match[1]; i < len(page); i++ {
 		c := page[i]
 		if escape {
 			escape = false
@@ -117,6 +118,55 @@ func extractPlayerResponse(page string) map[string]interface{} {
 		return nil
 	}
 	return out
+}
+
+func defaultCaptionTrackIndex(renderer map[string]interface{}) int {
+	audioTracks, _ := renderer["audioTracks"].([]interface{})
+	for _, item := range audioTracks {
+		audioTrack, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		index, ok := jsonNumberAsInt(audioTrack["defaultCaptionTrackIndex"])
+		if ok {
+			return index
+		}
+	}
+	return -1
+}
+
+func jsonNumberAsInt(value interface{}) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func captionName(track map[string]interface{}, fallback string) string {
+	nameObj, ok := track["name"].(map[string]interface{})
+	if !ok {
+		return fallback
+	}
+	if simple, ok := nameObj["simpleText"].(string); ok && simple != "" {
+		return simple
+	}
+	runs, _ := nameObj["runs"].([]interface{})
+	parts := []string{}
+	for _, item := range runs {
+		run, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		text, _ := run["text"].(string)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return firstNonEmpty(strings.TrimSpace(strings.Join(parts, "")), fallback)
 }
 
 func (a *app) fetchCaptionVTT(ctx context.Context, targetURL string) string {

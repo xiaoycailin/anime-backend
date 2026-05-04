@@ -73,13 +73,37 @@ func setCaptionPot(videoID string, pot string) {
 }
 
 func captionPot(videoID string) string {
+	pots := captionPots(videoID)
+	if len(pots) == 0 {
+		return ""
+	}
+	return pots[0]
+}
+
+func captionPots(videoID string) []string {
+	values := []string{}
 	ydwnPotMu.RLock()
 	pot := ydwnPotByVideo[videoID]
 	ydwnPotMu.RUnlock()
 	if strings.TrimSpace(pot) != "" {
-		return pot
+		values = append(values, pot)
 	}
-	return strings.TrimSpace(os.Getenv("YOUTUBE_PO_TOKEN"))
+	values = append(values, os.Getenv("YOUTUBE_PO_TOKEN"))
+	values = append(values, strings.FieldsFunc(os.Getenv("YOUTUBE_PO_TOKENS"), func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})...)
+
+	seen := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func withCaptionClientParams(raw string, pot string) string {

@@ -8,3 +8,6 @@ dist
 memory
 /src/generated/prisma
 /static/uploads/*
+data/youtube-cookies.txt
+video-proxy-go/video-proxy
+video-proxy-go/video-proxy.exe

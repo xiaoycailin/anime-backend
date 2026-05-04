@@ -17,7 +17,7 @@ export const CACHE_TTL = {
   GENRES: 3600,
   TAGS: 3600,
   STUDIOS: 3600,
-  SUBTITLES: 3600,
+  SUBTITLES: 36000,
 } as const;
 
 export const CACHE_KEYS = {

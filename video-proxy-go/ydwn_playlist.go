@@ -96,6 +96,7 @@ func writeText(w http.ResponseWriter, contentType string, cacheControl string, b
 	writeCors(w)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("CDN-Cache-Control", cacheControl)
 	_, _ = w.Write([]byte(body))
 }
 
@@ -103,5 +104,6 @@ func writeJSON(w http.ResponseWriter, payload interface{}, cacheControl string) 
 	writeCors(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("CDN-Cache-Control", cacheControl)
 	_ = json.NewEncoder(w).Encode(payload)
 }

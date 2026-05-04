@@ -21,6 +21,7 @@ import {
 } from "../../services/notification.service";
 import { markEpisodeReleasedAndNotifyOnce } from "../../services/release-schedule.service";
 import { calculateLevel } from "../../services/exp.service";
+import { importYouTubeSubtitlesWithYtDlp } from "../../services/youtube-subtitle-import.service";
 import { badRequest, notFound } from "../../utils/http-error";
 import { created, ok, paginated } from "../../utils/response";
 import { CacheInvalidator } from "../../lib/cache";
@@ -784,6 +785,36 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return ok(reply, { data: episode });
   });
 
+  app.get("/episodes/:id/navigation", async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const current = await prisma.episode.findUnique({
+      where: { id },
+      select: { id: true, animeId: true, number: true },
+    });
+    if (!current) throw notFound("Episode tidak ditemukan");
+
+    const episodes = await prisma.episode.findMany({
+      where: { animeId: current.animeId },
+      orderBy: [{ number: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        number: true,
+        title: true,
+        status: true,
+      },
+    });
+    const index = episodes.findIndex((episode) => episode.id === id);
+
+    return ok(reply, {
+      data: {
+        currentId: id,
+        episodes,
+        previous: index > 0 ? episodes[index - 1] : null,
+        next: index >= 0 && index < episodes.length - 1 ? episodes[index + 1] : null,
+      },
+    });
+  });
+
   app.put("/episodes/:id", async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const previous = await prisma.episode.findUnique({
@@ -865,6 +896,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     });
 
     if (episode) {
+      const subtitleImport = await importYouTubeSubtitlesWithYtDlp({
+        episodeId: episode.id,
+        serverUrl: value,
+      });
+
       await createRoleNotification({
         role: "admin",
         category: "admin_operational",
@@ -885,6 +921,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       });
 
       await CacheInvalidator.onEpisodeChange(episode.anime.slug, episode.slug);
+
+      return created(reply, { data: { ...server, subtitleImport } });
     }
 
     return created(reply, { data: server });

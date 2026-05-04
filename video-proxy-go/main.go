@@ -43,7 +43,7 @@ type app struct {
 }
 
 func main() {
-	loadSelectedEnv("../.env", "YOUTUBE_PO_TOKEN")
+	loadSelectedEnv("../.env", "YOUTUBE_PO_TOKEN", "YOUTUBE_PO_TOKENS")
 	port := env("PORT", "8091")
 	server := &http.Server{
 		Addr:              ":" + port,
