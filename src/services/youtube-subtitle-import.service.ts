@@ -7,7 +7,7 @@ import { createSubtitleTrack, parseSubtitleCues, saveSubtitleCues } from "./subt
 import { youtubeCookiesStatus } from "./youtube-cookies.service";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_LANGUAGES = ["id", "en", "ms"];
+const DEFAULT_LANGUAGES = ["id", "en", "zh", "zh-TW", "ja"];
 const YT_DLP_TIMEOUT_MS = 180_000;
 const YT_DLP_COOLDOWN_MS = 60 * 60 * 1000;
 
@@ -91,6 +91,8 @@ function subtitleLabel(language: string) {
     es: "Spanyol",
     th: "Thai",
     zh: "Tionghoa",
+    "zh-Hans": "Tionghoa (Sederhana)",
+    "zh-Hant": "Tionghoa (Tradisional)",
     "zh-TW": "Tionghoa (Taiwan)",
     vi: "Vietnam",
   };

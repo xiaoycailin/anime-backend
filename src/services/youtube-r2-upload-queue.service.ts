@@ -601,7 +601,6 @@ async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
     episodeId: session.episodeId,
     serverUrl: youtubeUrl,
     targetServerUrl: masterUrl,
-    allLanguages: true,
   });
   const subtitleMessage = subtitles.message ?? "Subtitle import selesai";
   await appendEncodingLog(
