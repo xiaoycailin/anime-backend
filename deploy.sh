@@ -7,7 +7,9 @@ echo "Syncing backend with GitHub..."
 git remote set-url origin https://github.com/xiaoycailin/anime-backend.git
 git fetch origin
 git reset --hard origin/main
-git clean -fd -e tmp/ -e data/youtube-cookies.txt
+grep -qxF "tmp/" .git/info/exclude || printf "\ntmp/\n" >> .git/info/exclude
+grep -qxF "data/youtube-cookies.txt" .git/info/exclude || printf "data/youtube-cookies.txt\n" >> .git/info/exclude
+git clean -fd
 
 echo "Installing backend dependencies..."
 if [ -f package-lock.json ]; then
