@@ -1,7 +1,7 @@
 import fp from "fastify-plugin";
 import cookie from "@fastify/cookie";
 import jwt from "@fastify/jwt";
-import type { FastifyInstance, FastifyPluginAsync } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 import { unauthorized } from "../utils/http-error";
 
 const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_TTL ?? "15m";
@@ -17,12 +17,20 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
 
   app.decorate("authenticate", async (request) => {
     try {
-      await request.jwtVerify();
+      const token = getAccessToken(request);
+      if (!token) throw new Error("Missing access token");
+      request.user = app.jwt.verify(token);
     } catch {
       throw unauthorized("Invalid or expired access token");
     }
   });
 });
+
+function getAccessToken(request: FastifyRequest) {
+  const header = request.headers.authorization;
+  const bearer = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  return bearer || request.cookies?.accessToken || null;
+}
 
 export function signAccessToken(
   app: FastifyInstance,
@@ -63,4 +71,12 @@ export const refreshCookieOptions = {
   secure: process.env.NODE_ENV === "production",
   path: "/",
   maxAge: 60 * 60 * 24 * 7,
+};
+
+export const accessCookieOptions = {
+  httpOnly: true,
+  sameSite: "lax" as const,
+  secure: process.env.NODE_ENV === "production",
+  path: "/",
+  maxAge: 15 * 60,
 };

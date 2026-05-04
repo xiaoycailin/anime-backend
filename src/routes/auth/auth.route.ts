@@ -9,7 +9,11 @@ import { OAuth2Client } from "google-auth-library";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { CacheInvalidator } from "../../lib/cache";
-import { refreshCookieOptions, signAccessToken } from "../../plugins/auth";
+import {
+  accessCookieOptions,
+  refreshCookieOptions,
+  signAccessToken,
+} from "../../plugins/auth";
 import {
   RefreshTokenError,
   issueRefreshToken,
@@ -473,6 +477,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
     const session = await issueLoginSession(app, request, user);
 
+    reply.setCookie("accessToken", session.accessToken, accessCookieOptions);
     reply.setCookie("refreshToken", session.refreshToken, refreshCookieOptions);
 
     return ok(reply, {
@@ -494,6 +499,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const user = await findOrCreateGoogleUser(profile);
     const session = await issueLoginSession(app, request, user);
 
+    reply.setCookie("accessToken", session.accessToken, accessCookieOptions);
     reply.setCookie("refreshToken", session.refreshToken, refreshCookieOptions);
 
     return ok(reply, {
@@ -530,12 +536,15 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       throw unauthorized("Refresh token tidak valid");
     }
 
+    const accessToken = signAccessToken(app, user);
+
+    reply.setCookie("accessToken", accessToken, accessCookieOptions);
     reply.setCookie("refreshToken", rotated.refreshToken, refreshCookieOptions);
 
     return ok(reply, {
       message: "Token refreshed",
       data: {
-        accessToken: signAccessToken(app, user),
+        accessToken,
         refreshToken: rotated.refreshToken,
       },
     });
@@ -546,6 +555,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     if (presented) {
       await revokeRefreshToken(app, presented);
     }
+    reply.clearCookie("accessToken", { path: "/" });
     reply.clearCookie("refreshToken", { path: "/" });
     return ok(reply, { message: "ok", data: { message: "ok" } });
   });

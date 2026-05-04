@@ -1,6 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import type { FastifyPluginAsync } from "fastify";
 import { redis } from "../../lib/redis";
 import {
@@ -15,7 +17,7 @@ import { ok } from "../../utils/response";
 const execFileAsync = promisify(execFile);
 const PM2_PROCESS_NAMES = ["anime-api", "anime-app", "video-proxy-go"] as const;
 const PM2_ACTIONS = ["start", "stop", "restart"] as const;
-const DEPLOY_TARGETS = ["backend", "frontend"] as const;
+const DEPLOY_TARGETS = ["backend", "frontend", "go-proxy"] as const;
 const GO_PROXY_HEALTH_URL =
   process.env.GO_VIDEO_PROXY_HEALTH_URL ??
   "https://s1-eth0x01.weebin.site/healthz";
@@ -32,6 +34,17 @@ type DeployTarget = (typeof DEPLOY_TARGETS)[number];
 
 type DeployBody = {
   target?: string;
+};
+
+type DeployStatus = "running" | "success" | "failed";
+
+type DeployJob = {
+  id: string;
+  target: DeployTarget;
+  status: DeployStatus;
+  exitCode?: number | null;
+  startedAt: string;
+  finishedAt?: string | null;
 };
 
 type Pm2Process = {
@@ -56,10 +69,73 @@ function deployPath(target: DeployTarget) {
     return process.env.BACKEND_DEPLOY_PATH || process.cwd();
   }
 
+  if (target === "go-proxy") {
+    return (
+      process.env.GO_PROXY_DEPLOY_PATH ||
+      path.resolve(process.cwd(), "video-proxy-go")
+    );
+  }
+
   return (
     process.env.FRONTEND_DEPLOY_PATH ||
     path.resolve(process.cwd(), "..", "frontend-app")
   );
+}
+
+function deployLogDir() {
+  return process.env.DEPLOY_LOG_DIR || path.resolve(process.cwd(), "data", "deploy-logs");
+}
+
+function deployJobPaths(id: string) {
+  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "");
+  const dir = deployLogDir();
+  return {
+    log: path.join(dir, `${safeId}.log`),
+    status: path.join(dir, `${safeId}.json`),
+  };
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function writeDeployStatus(job: DeployJob) {
+  const paths = deployJobPaths(job.id);
+  await fs.mkdir(path.dirname(paths.status), { recursive: true });
+  await fs.writeFile(paths.status, JSON.stringify(job, null, 2));
+}
+
+async function readDeployJob(id: string) {
+  const paths = deployJobPaths(id);
+  const [statusRaw, logRaw] = await Promise.all([
+    fs.readFile(paths.status, "utf8"),
+    fs.readFile(paths.log, "utf8").catch(() => ""),
+  ]);
+
+  return {
+    ...(JSON.parse(statusRaw) as DeployJob),
+    log: logRaw.slice(-80_000),
+  };
+}
+
+async function latestDeployJob(target?: DeployTarget) {
+  const dir = deployLogDir();
+  const files = await fs.readdir(dir).catch(() => []);
+  const jobs = await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json"))
+      .map((file) =>
+        fs
+          .readFile(path.join(dir, file), "utf8")
+          .then((raw) => JSON.parse(raw) as DeployJob)
+          .catch(() => null),
+      ),
+  );
+
+  return jobs
+    .filter((job): job is DeployJob => Boolean(job))
+    .filter((job) => !target || job.target === target)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
 }
 
 async function timed<T>(task: () => Promise<T>) {
@@ -243,42 +319,42 @@ async function runPm2Action(processName: Pm2ProcessName, action: Pm2Action) {
 async function runDeploy(target: DeployTarget) {
   const cwd = deployPath(target);
   const script = process.env.DEPLOY_SCRIPT_NAME || "deploy.sh";
+  const id = randomUUID();
+  const startedAt = new Date().toISOString();
+  const paths = deployJobPaths(id);
 
-  if (target === "backend") {
-    setTimeout(() => {
-      const child = execFile(
-        "bash",
-        [script],
-        {
-          cwd,
-          windowsHide: true,
-          timeout: 10 * 60 * 1000,
-          maxBuffer: 1024 * 1024,
-        },
-        () => undefined,
-      );
-      child.unref();
-    }, 250).unref();
-
-    return {
-      target,
-      scheduled: true,
-      output: "Backend deploy dijadwalkan. API akan restart saat proses selesai.",
-    };
-  }
-
-  const { stdout, stderr } = await execFileAsync("bash", [script], {
-    cwd,
-    timeout: 10 * 60 * 1000,
-    windowsHide: true,
-    maxBuffer: 1024 * 1024 * 4,
+  await fs.mkdir(path.dirname(paths.log), { recursive: true });
+  await fs.writeFile(paths.log, `[${startedAt}] deploy ${target} queued\n`);
+  await writeDeployStatus({
+    id,
+    target,
+    status: "running",
+    exitCode: null,
+    startedAt,
+    finishedAt: null,
   });
 
-  return {
-    target,
-    scheduled: false,
-    output: [stdout, stderr].filter(Boolean).join("\n").slice(-4000),
-  };
+  const logPath = shellQuote(paths.log);
+  const statusPath = shellQuote(paths.status);
+  const scriptPath = shellQuote(path.join(cwd, script));
+  const command = [
+    `echo "[$(date -Iseconds)] running ${script}" >> ${logPath}`,
+    `bash ${scriptPath} >> ${logPath} 2>&1`,
+    "code=$?",
+    `state=$([ "$code" -eq 0 ] && echo success || echo failed)`,
+    `printf '{"id":"${id}","target":"${target}","status":"%s","exitCode":%s,"startedAt":"${startedAt}","finishedAt":"%s"}' "$state" "$code" "$(date -Iseconds)" > ${statusPath}`,
+    `echo "[$(date -Iseconds)] finished with exit $code" >> ${logPath}`,
+  ].join("; ");
+
+  const child = spawn("bash", ["-lc", command], {
+    cwd,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+
+  return { id, target, scheduled: true };
 }
 
 function apiStatus() {
@@ -299,12 +375,20 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", app.adminAuthenticate);
 
   app.get("/summary", async (_request, reply) => {
-    const [redis, goProxy, pm2, backendDeploy, frontendDeploy] = await Promise.all([
+    const [
+      redis,
+      goProxy,
+      pm2,
+      backendDeploy,
+      frontendDeploy,
+      goProxyDeploy,
+    ] = await Promise.all([
       redisStatus(),
       goProxyStatus(),
       pm2Summary(),
       gitInfo("backend"),
       gitInfo("frontend"),
+      gitInfo("go-proxy"),
     ]);
 
     return ok(reply, {
@@ -317,6 +401,7 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
         deploy: {
           backend: backendDeploy,
           frontend: frontendDeploy,
+          goProxy: goProxyDeploy,
         },
         topEndpoints: getTopEndpointMetrics(),
         providerErrors: getProviderErrorMetrics(),
@@ -356,6 +441,23 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
         : `${target} deploy selesai`,
       data: result,
     });
+  });
+
+  app.get<{ Querystring: { target?: string } }>(
+    "/deploy/latest",
+    async (request, reply) => {
+      const rawTarget = request.query.target;
+      const target = DEPLOY_TARGETS.includes(rawTarget as DeployTarget)
+        ? (rawTarget as DeployTarget)
+        : undefined;
+      const job = await latestDeployJob(target);
+      return ok(reply, { data: job ?? null });
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/deploy/:id", async (request, reply) => {
+    const job = await readDeployJob(request.params.id);
+    return ok(reply, { data: job });
   });
 };
 
