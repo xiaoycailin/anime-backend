@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
 import type { FastifyPluginAsync } from "fastify";
 import { redis } from "../../lib/redis";
 import {
@@ -14,6 +15,7 @@ import { ok } from "../../utils/response";
 const execFileAsync = promisify(execFile);
 const PM2_PROCESS_NAMES = ["anime-api", "anime-app", "video-proxy-go"] as const;
 const PM2_ACTIONS = ["start", "stop", "restart"] as const;
+const DEPLOY_TARGETS = ["backend", "frontend"] as const;
 const GO_PROXY_HEALTH_URL =
   process.env.GO_VIDEO_PROXY_HEALTH_URL ??
   "https://s1-eth0x01.weebin.site/healthz";
@@ -24,6 +26,12 @@ type Pm2Action = (typeof PM2_ACTIONS)[number];
 type Pm2ActionBody = {
   processName?: string;
   action?: string;
+};
+
+type DeployTarget = (typeof DEPLOY_TARGETS)[number];
+
+type DeployBody = {
+  target?: string;
 };
 
 type Pm2Process = {
@@ -41,6 +49,17 @@ type Pm2Process = {
 
 function mb(bytes?: number) {
   return Number(((bytes ?? 0) / 1024 / 1024).toFixed(1));
+}
+
+function deployPath(target: DeployTarget) {
+  if (target === "backend") {
+    return process.env.BACKEND_DEPLOY_PATH || process.cwd();
+  }
+
+  return (
+    process.env.FRONTEND_DEPLOY_PATH ||
+    path.resolve(process.cwd(), "..", "frontend-app")
+  );
 }
 
 async function timed<T>(task: () => Promise<T>) {
@@ -134,6 +153,47 @@ async function pm2Summary() {
   }
 }
 
+async function gitInfo(target: DeployTarget) {
+  const cwd = deployPath(target);
+  const runGit = async (args: string[]) => {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd,
+      timeout: 2500,
+      windowsHide: true,
+      maxBuffer: 512 * 1024,
+    });
+    return stdout.trim();
+  };
+
+  try {
+    const [branch, commit, subject, committedAt, dirty] = await Promise.all([
+      runGit(["branch", "--show-current"]),
+      runGit(["rev-parse", "--short=8", "HEAD"]),
+      runGit(["log", "-1", "--format=%s"]),
+      runGit(["log", "-1", "--format=%cI"]),
+      runGit(["status", "--short"]),
+    ]);
+
+    return {
+      target,
+      status: "ok",
+      path: cwd,
+      branch,
+      commit,
+      subject,
+      committedAt,
+      dirty: dirty.length > 0,
+    };
+  } catch (error) {
+    return {
+      target,
+      status: "unavailable",
+      path: cwd,
+      message: error instanceof Error ? error.message : "Git unavailable",
+    };
+  }
+}
+
 function assertPm2Action(body: Pm2ActionBody) {
   if (!PM2_PROCESS_NAMES.includes(body.processName as Pm2ProcessName)) {
     throw badRequest("Process PM2 tidak valid");
@@ -151,6 +211,14 @@ function assertPm2Action(body: Pm2ActionBody) {
     processName: body.processName as Pm2ProcessName,
     action: body.action as Pm2Action,
   };
+}
+
+function assertDeployTarget(body: DeployBody) {
+  if (!DEPLOY_TARGETS.includes(body.target as DeployTarget)) {
+    throw badRequest("Target deploy tidak valid");
+  }
+
+  return body.target as DeployTarget;
 }
 
 async function runPm2Action(processName: Pm2ProcessName, action: Pm2Action) {
@@ -172,6 +240,47 @@ async function runPm2Action(processName: Pm2ProcessName, action: Pm2Action) {
   return { scheduled: false };
 }
 
+async function runDeploy(target: DeployTarget) {
+  const cwd = deployPath(target);
+  const script = process.env.DEPLOY_SCRIPT_NAME || "deploy.sh";
+
+  if (target === "backend") {
+    setTimeout(() => {
+      const child = execFile(
+        "bash",
+        [script],
+        {
+          cwd,
+          windowsHide: true,
+          timeout: 10 * 60 * 1000,
+          maxBuffer: 1024 * 1024,
+        },
+        () => undefined,
+      );
+      child.unref();
+    }, 250).unref();
+
+    return {
+      target,
+      scheduled: true,
+      output: "Backend deploy dijadwalkan. API akan restart saat proses selesai.",
+    };
+  }
+
+  const { stdout, stderr } = await execFileAsync("bash", [script], {
+    cwd,
+    timeout: 10 * 60 * 1000,
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 4,
+  });
+
+  return {
+    target,
+    scheduled: false,
+    output: [stdout, stderr].filter(Boolean).join("\n").slice(-4000),
+  };
+}
+
 function apiStatus() {
   const memory = process.memoryUsage();
   return {
@@ -190,10 +299,12 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", app.adminAuthenticate);
 
   app.get("/summary", async (_request, reply) => {
-    const [redis, goProxy, pm2] = await Promise.all([
+    const [redis, goProxy, pm2, backendDeploy, frontendDeploy] = await Promise.all([
       redisStatus(),
       goProxyStatus(),
       pm2Summary(),
+      gitInfo("backend"),
+      gitInfo("frontend"),
     ]);
 
     return ok(reply, {
@@ -203,6 +314,10 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
         redis,
         goProxy,
         pm2,
+        deploy: {
+          backend: backendDeploy,
+          frontend: frontendDeploy,
+        },
         topEndpoints: getTopEndpointMetrics(),
         providerErrors: getProviderErrorMetrics(),
       },
@@ -228,6 +343,18 @@ const adminHealthRoute: FastifyPluginAsync = async (app) => {
         action,
         scheduled: result.scheduled,
       },
+    });
+  });
+
+  app.post<{ Body: DeployBody }>("/deploy", async (request, reply) => {
+    const target = assertDeployTarget(request.body ?? {});
+    const result = await runDeploy(target);
+
+    return ok(reply, {
+      message: result.scheduled
+        ? `${target} deploy dijadwalkan`
+        : `${target} deploy selesai`,
+      data: result,
     });
   });
 };
