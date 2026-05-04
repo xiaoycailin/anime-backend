@@ -72,6 +72,12 @@ function ytDlpRemoteComponentArgs() {
   return value ? ["--remote-components", value] : [];
 }
 
+function workerConcurrency() {
+  const value = Number(process.env.YOUTUBE_R2_UPLOAD_CONCURRENCY ?? 3);
+  if (!Number.isFinite(value)) return 3;
+  return Math.min(5, Math.max(1, Math.floor(value)));
+}
+
 function isYouTubeUrl(value: string) {
   return /(?:youtube\.com\/watch|youtu\.be\/)/i.test(value);
 }
@@ -576,7 +582,6 @@ async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
   const masterUrl = getStreamingPublicUrl(masterKey);
   await setEpisodeR2Server({ episodeId: session.episodeId, masterUrl });
   await updateSessionStatus(uploadId, {
-    status: "completed",
     masterPlaylistUrl: masterUrl,
     uploadProgress: 100,
     encodingProgress: 100,
@@ -593,7 +598,21 @@ async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
     targetServerUrl: masterUrl,
     allLanguages: true,
   });
-  await appendEncodingLog(uploadId, subtitles.message ?? "Subtitle import selesai");
+  const subtitleMessage = subtitles.message ?? "Subtitle import selesai";
+  await appendEncodingLog(
+    uploadId,
+    subtitleMessage,
+    subtitles.imported.length > 0 ? "info" : "warn",
+  );
+  if (subtitles.imported.length > 0) {
+    await appendEncodingLog(
+      uploadId,
+      `Subtitle tersimpan: ${subtitles.imported
+        .map((track) => `${track.language} (${track.cueCount})`)
+        .join(", ")}`,
+    );
+  }
+  await updateSessionStatus(uploadId, { status: "completed" });
   await appendEncodingLog(uploadId, "YDWN R2 upload selesai");
   await redis.del(cancelKey(uploadId));
   await expireSessionImmediately(uploadId);
@@ -605,9 +624,10 @@ async function processYoutubeJob(job: Job<YoutubeR2JobData>) {
 export function startYoutubeR2UploadWorker() {
   if (worker) return worker;
 
+  const concurrency = workerConcurrency();
   worker = new Worker<YoutubeR2JobData>(QUEUE_NAME, processYoutubeJob, {
     connection: buildRedisConnection(),
-    concurrency: Number(process.env.YOUTUBE_R2_UPLOAD_CONCURRENCY ?? 1),
+    concurrency,
   });
 
   worker.on("failed", async (job, error) => {
@@ -624,7 +644,7 @@ export function startYoutubeR2UploadWorker() {
   });
 
   worker.on("ready", () => {
-    console.log("[youtube-r2-upload] worker ready");
+    console.log(`[youtube-r2-upload] worker ready concurrency=${concurrency}`);
   });
 
   return worker;
