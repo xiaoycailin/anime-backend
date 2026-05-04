@@ -304,7 +304,7 @@ async function remuxToHls(input: {
       "-hls_segment_type",
       "fmp4",
       "-hls_fmp4_init_filename",
-      path.join(input.outputDir, "init.mp4"),
+      "init.mp4",
       "-hls_segment_filename",
       path.join(input.outputDir, "segment_%05d.m4s"),
       "-f",
