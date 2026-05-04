@@ -47,6 +47,12 @@ type Variant = {
   bandwidth: number;
 };
 
+function hlsContentType(entry: string) {
+  if (entry.endsWith(".m3u8")) return "application/vnd.apple.mpegurl";
+  if (entry.endsWith(".m4s")) return "video/iso.segment";
+  return "video/mp4";
+}
+
 function buildRedisConnection() {
   return {
     host: process.env.REDIS_HOST || "127.0.0.1",
@@ -372,11 +378,6 @@ async function uploadFolder(input: {
   for (const entry of files) {
     const filePath = path.join(input.localDir, entry);
 
-    const contentType = entry.endsWith(".m3u8")
-      ? "application/vnd.apple.mpegurl"
-      : entry.endsWith(".m4s")
-        ? "video/iso.segment"
-        : "video/mp4";
     let body: Buffer;
     try {
       body = await fs.readFile(filePath);
@@ -392,7 +393,7 @@ async function uploadFolder(input: {
     await uploadStreamingObject({
       key: `${input.keyPrefix}/${entry}`,
       body,
-      contentType,
+      contentType: hlsContentType(entry),
       cacheControl: entry.endsWith(".m3u8")
         ? "public, max-age=60"
         : "public, max-age=31536000, immutable",
@@ -415,6 +416,161 @@ async function uploadFolder(input: {
       await input.onProgress?.(uploaded, files.length);
     }
   }
+}
+
+function getPlaylistUriFile(line: string) {
+  const value = line.trim();
+  if (!value || value.startsWith("#")) return null;
+  return path.posix.basename(value.split("?")[0] ?? value);
+}
+
+function buildGrowingChildPlaylist(
+  playlist: string,
+  uploadedFiles: Set<string>,
+  finalPlaylist: boolean,
+) {
+  const output: string[] = [];
+  const pendingMediaTags: string[] = [];
+  let mediaSectionStarted = false;
+
+  for (const line of playlist.trimEnd().split(/\r?\n/)) {
+    if (line === "#EXT-X-ENDLIST") {
+      if (finalPlaylist) output.push(line);
+      continue;
+    }
+
+    const uriFile = getPlaylistUriFile(line);
+    if (uriFile) {
+      mediaSectionStarted = true;
+      if (uriFile === "init.mp4") continue;
+      if (uploadedFiles.has(uriFile)) output.push(...pendingMediaTags, line);
+      pendingMediaTags.length = 0;
+      continue;
+    }
+
+    if (mediaSectionStarted) {
+      pendingMediaTags.push(line);
+      continue;
+    }
+
+    if (line.includes("#EXT-X-MAP") && !uploadedFiles.has("init.mp4")) continue;
+    output.push(line);
+  }
+
+  return `${output.join("\n")}\n`;
+}
+
+async function uploadVideoFolderGrowing(input: {
+  localDir: string;
+  keyPrefix: string;
+  uploadId: string;
+  resolution: number;
+  variant: Variant;
+  onVariantReady: () => Promise<void>;
+  onProgress?: (uploaded: number, total: number) => Promise<void>;
+}) {
+  const entries = await fs.readdir(input.localDir);
+  const playlistPath = path.join(input.localDir, "index.m3u8");
+  const playlist = await fs.readFile(playlistPath, "utf8");
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    if (entry.endsWith(".m3u8")) continue;
+    const filePath = path.join(input.localDir, entry);
+    const stat = await fs.stat(filePath);
+    if (stat.isFile()) files.push(entry);
+  }
+
+  files.sort((a, b) => {
+    if (a === "init.mp4" && b !== "init.mp4") return -1;
+    if (a !== "init.mp4" && b === "init.mp4") return 1;
+    return a.localeCompare(b);
+  });
+
+  const total = files.length + 1;
+  const uploadedFiles = new Set<string>();
+  const label = `${input.resolution}p`;
+  let uploaded = 0;
+  let mediaUploaded = 0;
+  let variantReady = false;
+
+  await updateSessionStatus(input.uploadId, {
+    currentResolution: input.resolution,
+    totalChunks: total,
+    receivedChunks: 0,
+    r2UploadProgress: 0,
+  });
+
+  const publishChildPlaylist = async (finalPlaylist: boolean) => {
+    const body = finalPlaylist
+      ? playlist
+      : buildGrowingChildPlaylist(playlist, uploadedFiles, false);
+    await uploadStreamingObject({
+      key: `${input.keyPrefix}/index.m3u8`,
+      body: Buffer.from(body, "utf8"),
+      contentType: hlsContentType("index.m3u8"),
+      cacheControl: finalPlaylist ? "public, max-age=60" : "public, max-age=5",
+    });
+
+    if (!variantReady) {
+      variantReady = true;
+      await input.onVariantReady();
+    }
+  };
+
+  for (const entry of files) {
+    const filePath = path.join(input.localDir, entry);
+    let body: Buffer;
+    try {
+      body = await fs.readFile(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(
+          `[${label}] file temp hilang saat upload R2: ${entry}. ` +
+            "Job harus diulang karena file lokal sudah dibersihkan.",
+        );
+      }
+      throw error;
+    }
+
+    await uploadStreamingObject({
+      key: `${input.keyPrefix}/${entry}`,
+      body,
+      contentType: hlsContentType(entry),
+      cacheControl: "public, max-age=31536000, immutable",
+    });
+
+    uploadedFiles.add(entry);
+    uploaded += 1;
+    if (entry !== "init.mp4") mediaUploaded += 1;
+
+    const progress = total > 0 ? (uploaded / total) * 100 : 100;
+    await updateSessionStatus(input.uploadId, {
+      currentResolution: input.resolution,
+      receivedChunks: uploaded,
+      totalChunks: total,
+      r2UploadProgress: Number(progress.toFixed(2)),
+    });
+
+    if (mediaUploaded > 0 && (mediaUploaded === 1 || mediaUploaded % 10 === 0)) {
+      await publishChildPlaylist(false);
+      await input.onProgress?.(uploaded, total);
+    }
+
+    if (uploaded === files.length || uploaded % 10 === 0) {
+      await appendEncodingLog(input.uploadId, `[${label}] R2 ${uploaded}/${total} file`);
+      await input.onProgress?.(uploaded, total);
+    }
+  }
+
+  await publishChildPlaylist(true);
+  uploaded += 1;
+  await updateSessionStatus(input.uploadId, {
+    currentResolution: input.resolution,
+    receivedChunks: uploaded,
+    totalChunks: total,
+    r2UploadProgress: 100,
+  });
 }
 
 function buildMasterPlaylist(variants: Variant[], hasAudio: boolean) {
@@ -443,7 +599,7 @@ async function publishMasterPlaylist(input: {
     key: input.masterKey,
     body: Buffer.from(buildMasterPlaylist([...input.variants], input.hasAudio), "utf8"),
     contentType: "application/vnd.apple.mpegurl",
-    cacheControl: "public, max-age=30",
+    cacheControl: "public, max-age=5",
   });
 }
 
@@ -856,24 +1012,34 @@ async function processYoutubeJobV2(job: Job<YoutubeR2JobData>) {
       currentResolution: actualResolution,
       encodingProgress: 100,
     });
-    await uploadFolder({
+    const stat = await fs.stat(sourcePath);
+    const bandwidth = Math.max(128_000, Math.ceil((stat.size * 8) / probe.durationSec));
+    const variant: Variant = {
+      resolution: actualResolution,
+      width: probe.width,
+      height: probe.height,
+      bandwidth,
+    };
+    const publishVariant = async () => {
+      if (!variants.some((item) => item.resolution === actualResolution)) {
+        variants.push(variant);
+      }
+      await publishCurrentMaster(`[master] update berkala varian ${actualResolution}p`);
+    };
+
+    await uploadVideoFolderGrowing({
       localDir: outputDir,
       keyPrefix: `videos/${videoId}/${actualResolution}p`,
       uploadId,
       resolution: actualResolution,
+      variant,
+      onVariantReady: publishVariant,
       onProgress: maybePublishPeriodicMaster,
     });
     await assertNotCancelled(uploadId);
 
-    const stat = await fs.stat(sourcePath);
-    const bandwidth = Math.max(128_000, Math.ceil((stat.size * 8) / probe.durationSec));
     if (!variants.some((variant) => variant.resolution === actualResolution)) {
-      variants.push({
-        resolution: actualResolution,
-        width: probe.width,
-        height: probe.height,
-        bandwidth,
-      });
+      variants.push(variant);
     }
     const progress = Math.min(
       99,
