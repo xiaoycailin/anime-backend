@@ -3,6 +3,7 @@ import type { ReactionType, ReleaseScheduleStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { addExp } from "../../services/exp.service";
 import { createRoleNotification } from "../../services/notification.service";
+import { getAnichinSchedule } from "../../services/anichin-schedule.service";
 import { ok, sendError } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import { normalizeTitle } from "../../utils/season-parser";
@@ -66,75 +67,12 @@ function addDays(date: Date, days: number) {
 
 function scheduleStatus(input: {
   status?: string | null;
-  scheduledAt: Date;
   releasedAt?: Date | null;
   episodeId?: number | null;
 }) {
   if (input.status === "cancelled") return "cancelled";
   if (input.releasedAt || input.episodeId) return "released";
-  if (input.scheduledAt.getTime() < Date.now()) return "delayed";
   return "upcoming";
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_RELEASE_INTERVAL_MS = 7 * DAY_MS;
-const MIN_PREDICTABLE_INTERVAL_MS = DAY_MS;
-const MAX_PREDICTABLE_INTERVAL_MS = 14 * DAY_MS;
-
-function releaseDateOfEpisode(input: {
-  scheduledReleaseAt?: Date | null;
-  createdAt: Date;
-}) {
-  return input.scheduledReleaseAt ?? input.createdAt;
-}
-
-function isLikelyFinishedAnime(input: {
-  status?: string | null;
-  totalEpisodes?: number | null;
-  latestEpisodeNumber: number;
-}) {
-  const status = input.status?.toLowerCase() ?? "";
-  if (
-    status.includes("complete") ||
-    status.includes("completed") ||
-    status.includes("finished") ||
-    status.includes("tamat") ||
-    status.includes("hiatus")
-  ) {
-    return true;
-  }
-
-  return Boolean(
-    input.totalEpisodes &&
-      input.totalEpisodes > 0 &&
-      input.latestEpisodeNumber === input.totalEpisodes,
-  );
-}
-
-function estimateReleaseIntervalMs(
-  episodes: { number: number; scheduledReleaseAt?: Date | null; createdAt: Date }[],
-) {
-  const sorted = [...episodes].sort((left, right) => right.number - left.number);
-  const intervals: number[] = [];
-
-  for (let index = 0; index < sorted.length - 1; index += 1) {
-    const current = sorted[index];
-    const previous = sorted[index + 1];
-    if (current.number - previous.number !== 1) continue;
-
-    const diff =
-      releaseDateOfEpisode(current).getTime() -
-      releaseDateOfEpisode(previous).getTime();
-
-    if (diff >= MIN_PREDICTABLE_INTERVAL_MS && diff <= MAX_PREDICTABLE_INTERVAL_MS) {
-      intervals.push(diff);
-    }
-  }
-
-  if (!intervals.length) return DEFAULT_RELEASE_INTERVAL_MS;
-
-  intervals.sort((left, right) => left - right);
-  return intervals[Math.floor(intervals.length / 2)];
 }
 
 async function optionalUserId(
@@ -280,17 +218,16 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
     const range = query.range === "today" || query.range === "week"
       ? query.range
       : "rolling";
-    const statusFilter = ["upcoming", "released", "delayed", "cancelled"].includes(
+    const statusFilter = ["upcoming", "released"].includes(
       query.status ?? "",
     )
       ? query.status
       : "all";
+    const includeLegacySchedules = statusFilter !== "upcoming";
     const scheduleDbStatus =
-      statusFilter === "all"
-        ? undefined
-        : statusFilter === "upcoming" || statusFilter === "delayed"
-          ? "scheduled"
-          : statusFilter;
+      statusFilter === "all" || statusFilter === "released"
+        ? "released"
+        : undefined;
     const start =
       range === "today" || range === "week"
         ? today
@@ -303,9 +240,10 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           : addDays(today, days);
 
     try {
-      const [schedules, fallbackEpisodes, releaseCandidateAnime] = await Promise.all([
+      const [schedules, fallbackEpisodes, anichinSchedule] = await Promise.all([
         prisma.animeReleaseSchedule.findMany({
           where: {
+            ...(includeLegacySchedules ? {} : { id: -1 }),
             scheduledAt: {
               gte: start,
               lt: end,
@@ -369,42 +307,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
             },
           },
         }),
-        prisma.anime.findMany({
-          where: {
-            episodes: {
-              some: {
-                status: "published",
-              },
-            },
-          },
-          orderBy: [{ updatedAt: "desc" }],
-          take: 500,
-          select: {
-            id: true,
-            slug: true,
-            title: true,
-            thumbnail: true,
-            status: true,
-            type: true,
-            totalEpisodes: true,
-            episodes: {
-              where: {
-                status: "published",
-              },
-              orderBy: [{ number: "desc" }, { createdAt: "desc" }],
-              take: 5,
-              select: {
-                id: true,
-                animeId: true,
-                number: true,
-                title: true,
-                thumbnail: true,
-                createdAt: true,
-                scheduledReleaseAt: true,
-              },
-            },
-          },
-        }),
+        getAnichinSchedule(),
       ]);
 
       type ScheduleItem = {
@@ -427,74 +330,18 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         animeType: string | null;
       };
 
-      const predictedItems: ScheduleItem[] = [];
-
-      if (statusFilter === "all" || statusFilter === "upcoming") {
-        const existingScheduleKeys = new Set(
-          schedules.map((item) => `${item.animeId}:${item.episodeNumber}`),
-        );
-
-        for (const anime of releaseCandidateAnime) {
-          const episodes = anime.episodes;
-          const latest = [...episodes].sort((left, right) => {
-            if (right.number !== left.number) return right.number - left.number;
-            return (
-              releaseDateOfEpisode(right).getTime() -
-              releaseDateOfEpisode(left).getTime()
-            );
-          })[0];
-          if (!latest) continue;
-
-          if (
-            isLikelyFinishedAnime({
-              status: anime.status,
-              totalEpisodes: anime.totalEpisodes,
-              latestEpisodeNumber: latest.number,
-            })
-          ) {
-            continue;
-          }
-
-          const nextEpisodeNumber = latest.number + 1;
-          const key = `${latest.animeId}:${nextEpisodeNumber}`;
-          if (existingScheduleKeys.has(key)) continue;
-
-          const predictedAt = new Date(
-            releaseDateOfEpisode(latest).getTime() +
-              estimateReleaseIntervalMs(episodes),
-          );
-
-          if (predictedAt < start || predictedAt >= end || predictedAt < today) {
-            continue;
-          }
-
-          predictedItems.push({
-            id: -anime.id,
-            animeId: anime.id,
-            animeTitle: normalizeTitle(anime.title),
-            animeSlug: anime.slug,
-            title: `${normalizeTitle(anime.title)} Episode ${nextEpisodeNumber}`,
-            episode: `Ep ${nextEpisodeNumber}`,
-            episodeNumber: nextEpisodeNumber,
-            thumbnail: latest.thumbnail ?? anime.thumbnail,
-            href: `/anime/${anime.slug}`,
-            scheduledAt: predictedAt.toISOString(),
-            releasedAt: null,
-            releaseTime: formatScheduleTime(predictedAt),
-            scheduleStatus: "upcoming",
-            scheduleSource: "prediction",
-            notificationSent: false,
-            animeStatus: anime.status,
-            animeType: anime.type,
-          });
-        }
-      }
+      const upcomingItems = anichinSchedule.filter((item) => {
+        const scheduledAt = new Date(item.scheduledAt);
+        if (scheduledAt < start || scheduledAt >= end) return false;
+        if (statusFilter === "upcoming") return item.scheduleStatus === "upcoming";
+        if (statusFilter === "released") return false;
+        return true;
+      });
 
       const items: ScheduleItem[] = [
         ...schedules.map((item: any) => {
           const computedStatus = scheduleStatus({
             status: item.status,
-            scheduledAt: item.scheduledAt,
             releasedAt: item.releasedAt,
             episodeId: item.episodeId,
           });
@@ -541,7 +388,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           animeStatus: item.anime.status,
           animeType: item.anime.type,
         })),
-        ...predictedItems,
+        ...upcomingItems,
       ]
         .filter((item) =>
           statusFilter === "all" ? true : item.scheduleStatus === statusFilter,
@@ -584,7 +431,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           range,
           status: statusFilter,
           timezone: "Asia/Jakarta",
-          source: "animeReleaseSchedule+episodeFallback",
+          source: "anichinSchedule+episodeFallback",
           start: start.toISOString(),
           end: end.toISOString(),
         },

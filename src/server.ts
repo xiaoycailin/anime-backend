@@ -12,6 +12,7 @@ import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
 import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
 import { startSupportFlushJob } from "./jobs/support-flush.job";
 import { startSupportAutoCloseJob } from "./jobs/support-autoclose.job";
+import { startAnichinScheduleScrapeJob } from "./jobs/anichin-schedule-scrape.job";
 import { closeRedis, redis, isRedisReady } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
@@ -36,6 +37,7 @@ function startRedisDependentJobs() {
     info: (msg) => app.log.info(msg),
     error: (msg, err) => app.log.error({ err }, msg),
   });
+  startAnichinScheduleScrapeJob();
 }
 
 setCacheLogger({
