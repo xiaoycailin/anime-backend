@@ -123,7 +123,7 @@ async function runItem(item: AnichinScheduleItem, now: Date) {
       episodeNumber: item.episodeNumber,
     });
 
-    if (result.newEpisodesAdded > 0) {
+    if (result.newEpisodesAdded > 0 || result.matchedEpisodes > 0) {
       await saveState(key, {
         attempts,
         nextRunAt: null,
@@ -132,7 +132,10 @@ async function runItem(item: AnichinScheduleItem, now: Date) {
       });
       await notifyAdmin({
         title: "Job scraping Anichin selesai",
-        message: `${result.newEpisodesAdded} ep baru ditambahkan untuk ${result.animeTitle}.`,
+        message:
+          result.newEpisodesAdded > 0
+            ? `${result.newEpisodesAdded} ep baru ditambahkan untuk ${result.animeTitle}.`
+            : `${result.animeTitle} sudah punya episode target, tidak perlu retry.`,
         item,
         attempts,
         status: "completed",
