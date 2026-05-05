@@ -51,6 +51,7 @@ type SegmentNotificationInput = Omit<NotificationInput, "scope"> & {
     | { type: "all-users" }
     | { type: "admins" }
     | { type: "saved-anime"; animeId: number }
+    | { type: "anime-engaged"; animeId: number }
     | { type: "genres"; genres: string[] };
 };
 
@@ -508,6 +509,45 @@ async function resolveSegmentUsers(
     });
 
     return rows.map((row) => row.user);
+  }
+
+  if (segment.type === "anime-engaged") {
+    const [savedRows, watchRows] = await Promise.all([
+      prisma.savedAnime.findMany({
+        where: { animeId: segment.animeId },
+        distinct: ["userId"],
+        select: {
+          user: {
+            select: {
+              id: true,
+              notificationPreference: true,
+            },
+          },
+        },
+      }),
+      prisma.watchHistory.findMany({
+        where: { animeId: segment.animeId },
+        distinct: ["userId"],
+        select: {
+          user: {
+            select: {
+              id: true,
+              notificationPreference: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const userMap = new Map<
+      number,
+      { id: number; notificationPreference: NotificationPreference | null }
+    >();
+
+    for (const row of savedRows) userMap.set(row.user.id, row.user);
+    for (const row of watchRows) userMap.set(row.user.id, row.user);
+
+    return [...userMap.values()];
   }
 
   const genres = [

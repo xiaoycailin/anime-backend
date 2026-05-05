@@ -14,12 +14,16 @@ import {
   addLog,
   incrementProcessed,
   finishProgress,
+  getProgress,
+  upsertAnimeUpdate,
 } from "../../lib/progessStore";
 import { createRoleNotification } from "../notification.service";
+import { createSegmentNotification } from "../notification.service";
 
 type ScrapeRunContext = {
   initiatedById?: number | null;
   initiatedByUsername?: string | null;
+  recentEpisodeLimit?: number;
 };
 
 async function fetchPage(url: string): Promise<string> {
@@ -137,11 +141,17 @@ export default async function scrape(
   url: string,
   context: ScrapeRunContext = {},
 ): Promise<AnimeDetail[]> {
+  const recentEpisodeLimit = Math.max(1, context.recentEpisodeLimit ?? 2);
   const listHtml = await fetchPage(url);
   const seriesList = getSeriesList(listHtml);
 
-  initProgress(url, seriesList.length);
+  initProgress(url, seriesList.length, recentEpisodeLimit);
   addLog(url, "info", `Found ${seriesList.length} series to scrape`);
+  addLog(
+    url,
+    "info",
+    `Episode scan mode: latest ${recentEpisodeLimit} episode(s) only`,
+  );
 
   const withDetails: AnimeDetail[] = [];
 
@@ -160,9 +170,23 @@ export default async function scrape(
         `Got detail: ${detail.title} — ${detail.episodes.length} episodes`,
       );
 
+      const totalEpisodesDetected = detail.episodes.length;
+      const episodesToScan = [...detail.episodes]
+        .sort((left, right) => {
+          const leftNumber = Number.parseFloat(left.number) || 0;
+          const rightNumber = Number.parseFloat(right.number) || 0;
+          return rightNumber - leftNumber;
+        })
+        .slice(0, recentEpisodeLimit);
+      addLog(
+        url,
+        "info",
+        `  ↳ Scanning ${episodesToScan.length}/${totalEpisodesDetected} latest episode(s)`,
+      );
+
       detail.episodes = (
         await Promise.all(
-          detail.episodes.map(async (episode): Promise<AnimeEpisode | null> => {
+          episodesToScan.map(async (episode): Promise<AnimeEpisode | null> => {
             if (!episode.href) return null;
 
             addLog(url, "info", `  ↳ Fetching episode: ${episode.title}`);
@@ -179,14 +203,64 @@ export default async function scrape(
       ).filter((ep): ep is AnimeEpisode => ep !== null);
 
       addLog(url, "info", `Inserting to DB: ${detail.title}`);
-      await insertAnime(detail);
+      const insertResult = await insertAnime(detail);
 
       incrementProcessed(url);
       addLog(
         url,
         "success",
-        `✓ Done: ${detail.title} (${detail.episodes.length} eps)`,
+        `✓ Done: ${detail.title} (+${insertResult.newEpisodesAdded} eps baru)`,
       );
+      upsertAnimeUpdate(url, {
+        animeTitle: insertResult.animeTitle,
+        animeSlug: insertResult.animeSlug,
+        isNewAnime: insertResult.isNewAnime,
+        totalEpisodesDetected,
+        scannedEpisodes: detail.episodes.length,
+        newEpisodesAdded: insertResult.newEpisodesAdded,
+        newEpisodeNumbers: insertResult.newEpisodeNumbers,
+      });
+
+      if (insertResult.isNewAnime) {
+        const genres = [...new Set(detail.genres.map((item) => item.trim()).filter(Boolean))];
+        if (genres.length > 0) {
+          await createSegmentNotification({
+            segment: { type: "genres", genres },
+            category: "content_new",
+            type: "anime_scraped_new",
+            title: `Anime baru: ${insertResult.animeTitle}`,
+            message: `Anime baru ditambahkan dari scraping.`,
+            link: `/anime/${insertResult.animeSlug}`,
+            image: detail.thumbnail ?? null,
+            topic: "anime-new",
+            payload: {
+              animeSlug: insertResult.animeSlug,
+              animeTitle: insertResult.animeTitle,
+              genres,
+            },
+            createdById: context.initiatedById ?? null,
+          });
+        }
+      } else if (insertResult.newEpisodesAdded > 0) {
+        await createSegmentNotification({
+          segment: { type: "anime-engaged", animeId: insertResult.animeId },
+          category: "content_update",
+          type: "anime_scraped_new_episode",
+          title: `Update episode: ${insertResult.animeTitle}`,
+          message: `${insertResult.newEpisodesAdded} episode baru ditambahkan.`,
+          link: `/anime/${insertResult.animeSlug}`,
+          image: null,
+          topic: "anime-update",
+          payload: {
+            animeId: insertResult.animeId,
+            animeSlug: insertResult.animeSlug,
+            animeTitle: insertResult.animeTitle,
+            newEpisodesAdded: insertResult.newEpisodesAdded,
+            newEpisodeNumbers: insertResult.newEpisodeNumbers,
+          },
+          createdById: context.initiatedById ?? null,
+        });
+      }
 
       withDetails.push(detail);
     } catch (err) {
@@ -207,18 +281,24 @@ export default async function scrape(
   );
 
   if (context.initiatedById) {
+    const progressState = getProgress(url);
+    const newAnimeCount = progressState?.summary.newAnimeCount ?? 0;
+    const newEpisodesTotal = progressState?.summary.newEpisodesTotal ?? 0;
+
     await createRoleNotification({
       role: "admin",
       category: "admin_operational",
       type: "scraping_finished",
       title: "Scraping selesai",
-      message: `${context.initiatedByUsername ?? "Admin"} menyelesaikan scraping ${withDetails.length}/${seriesList.length} series.`,
+      message: `Scraping selesai total ${newAnimeCount} anime baru dan ${newEpisodesTotal} ep baru.`,
       link: "/admin/scraping-progress",
       topic: "admin-scraping",
       payload: {
         url,
         inserted: withDetails.length,
         total: seriesList.length,
+        newAnimeCount,
+        newEpisodesTotal,
       },
       createdById: context.initiatedById,
     });

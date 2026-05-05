@@ -3,23 +3,35 @@ import { assert } from "../../utils/assert";
 import { ok, sendError } from "../../utils/response";
 import scrapeSeriesList from "../../services/scraper-service/scrapeSeriesList";
 import getBody from "../../services/scraper-service/getBody";
-import { deleteProgress, getProgress } from "../../lib/progessStore";
+import {
+  deleteProgress,
+  getProgress,
+  subscribeProgress,
+} from "../../lib/progessStore";
 import { createRoleNotification } from "../../services/notification.service";
 
 export const scrapingRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", app.adminAuthenticate);
 
   app.get("/", async (request, reply) => {
-    const { url } = request.query as { url?: string };
+    const { url, episodeLimit } = request.query as {
+      url?: string;
+      episodeLimit?: string | number;
+    };
 
     assert(url, "Query parameter 'url' is required", {
       example: "/api?url=https://example.com",
     });
+    const parsedEpisodeLimit = Number(episodeLimit);
+    const recentEpisodeLimit = Number.isFinite(parsedEpisodeLimit)
+      ? Math.max(1, Math.min(2, parsedEpisodeLimit))
+      : 2;
 
     try {
       scrapeSeriesList(url, {
         initiatedById: request.user.id,
         initiatedByUsername: request.user.username,
+        recentEpisodeLimit,
       }).catch((err) => {
         request.log.error(err);
         createRoleNotification({
@@ -39,7 +51,10 @@ export const scrapingRoutes: FastifyPluginAsync = async (app) => {
       });
       return ok(reply, {
         message: "running",
-        data: { progressUrl: `/progress?url=${encodeURIComponent(url)}` },
+        data: {
+          progressUrl: `/progress?url=${encodeURIComponent(url)}`,
+          recentEpisodeLimit,
+        },
       });
     } catch (error) {
       request.log.error(error);
@@ -67,6 +82,45 @@ export const scrapingRoutes: FastifyPluginAsync = async (app) => {
     }
 
     return ok(reply, { data: progress });
+  });
+  app.get("/progress/stream", async (request, reply) => {
+    const { url } = request.query as { url?: string };
+
+    assert(url, "Query parameter 'url' is required");
+    const origin = request.headers.origin;
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
+      "Access-Control-Allow-Credentials": "true",
+      Vary: "Origin",
+    });
+
+    const writeProgress = (payload: unknown) => {
+      reply.raw.write(`event: progress\n`);
+      reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    writeProgress(getProgress(url) ?? null);
+
+    const unsubscribe = subscribeProgress(url, (state) => {
+      writeProgress(state);
+    });
+
+    const heartbeat = setInterval(() => {
+      reply.raw.write(`event: heartbeat\n`);
+      reply.raw.write(`data: {}\n\n`);
+    }, 15000);
+
+    request.raw.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      reply.raw.end();
+    });
   });
 
   // ─── DELETE PROGRESS ──────────────────────────────────────────────────────────

@@ -37,7 +37,18 @@ function toAnimeSlug(title: string): string {
     .replace(/\s+/g, "-");
 }
 
-export async function insertAnime(anime: AnimeDetail): Promise<void> {
+export type InsertAnimeResult = {
+  animeId: number;
+  animeTitle: string;
+  animeSlug: string;
+  isNewAnime: boolean;
+  newEpisodesAdded: number;
+  newEpisodeNumbers: number[];
+};
+
+export async function insertAnime(
+  anime: AnimeDetail,
+): Promise<InsertAnimeResult> {
   const slug = toAnimeSlug(anime.title);
   const { metadata } = anime;
 
@@ -46,7 +57,13 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
   );
 
   // ─── TRANSACTION: semua atau tidak sama sekali ────────────────────────────
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
+    const existingAnime = await tx.anime.findUnique({
+      where: { slug },
+      select: { id: true },
+    });
+    const isNewAnime = !existingAnime;
+
     // ─── INSERT-ONLY ANIME ───────────────────────────────────────────────────
     const saved = await tx.anime.upsert({
       where: { slug },
@@ -120,6 +137,8 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
     );
 
     // ─── EPISODES ─────────────────────────────────────────────────────────────
+    const newEpisodeNumbers: number[] = [];
+
     await Promise.all(
       anime.episodes.map(async (ep) => {
         const epSlug = ep.href
@@ -144,6 +163,7 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
             date: ep.date,
           },
         });
+        newEpisodeNumbers.push(epNumber);
 
         // ─── INSERT-ONLY SERVERS ──────────────────────────────────────────────
         if (ep.servers?.length) {
@@ -157,6 +177,22 @@ export async function insertAnime(anime: AnimeDetail): Promise<void> {
         }
       }),
     );
+
+    if (!isNewAnime && newEpisodeNumbers.length > 0) {
+      await tx.anime.update({
+        where: { id: saved.id },
+        data: { updatedAt: new Date() },
+      });
+    }
+
+    return {
+      animeId: saved.id,
+      animeTitle: saved.title,
+      animeSlug: saved.slug,
+      isNewAnime,
+      newEpisodesAdded: newEpisodeNumbers.length,
+      newEpisodeNumbers: newEpisodeNumbers.sort((a, b) => b - a),
+    };
   });
 }
 
