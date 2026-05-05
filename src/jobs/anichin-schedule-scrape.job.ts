@@ -1,4 +1,5 @@
 import { redis } from "../lib/redis";
+import { prisma } from "../lib/prisma";
 import {
   getAnichinSchedule,
   type AnichinScheduleItem,
@@ -21,12 +22,17 @@ type JobState = {
 
 let timer: NodeJS.Timeout | null = null;
 let isRunning = false;
+let lastRunAt: Date | null = null;
+let lastError: string | null = null;
+let totalRuns = 0;
+let totalItemsCompleted = 0;
 
 function stateKey(item: AnichinScheduleItem) {
-  const episodeKey = item.episodeNumber > 0 ? item.episodeNumber : "unknown";
-  return `anichin:schedule-job:${item.animeSlug}:${episodeKey}:${new Date(
-    item.scheduledAt,
-  ).getTime()}`;
+  const episodeKey =
+    item.episodeNumber > 0
+      ? `ep-${item.episodeNumber}`
+      : `unknown-${item.scheduledAt.slice(0, 10)}`;
+  return `anichin:schedule-job:${item.animeSlug}:${episodeKey}`;
 }
 
 function lockKey(item: AnichinScheduleItem) {
@@ -71,6 +77,20 @@ function shouldRun(state: JobState, now: Date) {
   return new Date(state.nextRunAt).getTime() <= now.getTime();
 }
 
+async function hasTargetEpisode(item: AnichinScheduleItem) {
+  if (!item.animeSlug || item.episodeNumber <= 0) return false;
+
+  const episode = await prisma.episode.findFirst({
+    where: {
+      number: item.episodeNumber,
+      anime: { slug: item.animeSlug },
+    },
+    select: { id: true },
+  });
+
+  return Boolean(episode);
+}
+
 async function notifyAdmin(input: {
   title: string;
   message: string;
@@ -105,6 +125,27 @@ async function runItem(item: AnichinScheduleItem, now: Date) {
 
   try {
     const state = parseState(await redis.get(key));
+    if (state.completedAt || state.lastStatus === "exhausted") return;
+
+    if (await hasTargetEpisode(item)) {
+      const attempts = state.attempts;
+      await saveState(key, {
+        attempts,
+        nextRunAt: null,
+        completedAt: new Date().toISOString(),
+        lastStatus: "completed",
+      });
+      totalItemsCompleted += 1;
+      await notifyAdmin({
+        title: "Job scraping Anichin selesai",
+        message: `${item.animeTitle} sudah punya episode target, tidak perlu retry.`,
+        item,
+        attempts,
+        status: "completed",
+      });
+      return;
+    }
+
     if (!shouldRun(state, now)) return;
 
     const attempts = state.attempts + 1;
@@ -130,6 +171,7 @@ async function runItem(item: AnichinScheduleItem, now: Date) {
         completedAt: new Date().toISOString(),
         lastStatus: "completed",
       });
+      totalItemsCompleted += 1;
       await notifyAdmin({
         title: "Job scraping Anichin selesai",
         message:
@@ -199,16 +241,31 @@ export async function runAnichinScheduleScrapeJob() {
   isRunning = true;
 
   try {
+    totalRuns += 1;
+    lastRunAt = new Date();
     const now = new Date();
     const schedule = await getAnichinSchedule();
     const dueItems = schedule.filter((item) => isDue(item, now));
 
     for (const item of dueItems) {
       const state = parseState(await redis.get(stateKey(item)));
-      if (shouldRun(state, now)) {
+      const hasExistingTarget =
+        !state.completedAt &&
+        state.lastStatus !== "exhausted" &&
+        (await hasTargetEpisode(item));
+      if (shouldRun(state, now) || hasExistingTarget) {
         await runItem(item, now);
       }
     }
+    lastError = null;
+    return {
+      checked: dueItems.length,
+      completed: totalItemsCompleted,
+      runAt: lastRunAt.toISOString(),
+    };
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     isRunning = false;
   }
@@ -232,4 +289,18 @@ export function stopAnichinScheduleScrapeJob() {
   if (!timer) return;
   clearInterval(timer);
   timer = null;
+}
+
+export function getAnichinScheduleScrapeJobStatus() {
+  return {
+    running: timer !== null,
+    executing: isRunning,
+    intervalMs: JOB_INTERVAL_MS,
+    retryDelaySeconds: RETRY_DELAY_SECONDS,
+    maxAttempts: MAX_ATTEMPTS,
+    totalRuns,
+    totalItemsCompleted,
+    lastRunAt,
+    lastError,
+  };
 }

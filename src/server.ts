@@ -4,40 +4,36 @@ dotenv.config();
 
 import { buildApp } from "./app";
 import { startTrendingRefreshJob } from "./services/trending.service";
-import { startReminderJob } from "./jobs/reminder.job";
 import { startEncodingWorker } from "./services/video-pipeline.service";
 import { startUrlUploadWorker } from "./services/url-upload-queue.service";
 import { startYoutubeR2UploadWorker } from "./services/youtube-r2-upload-queue.service";
-import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
-import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
-import { startSupportFlushJob } from "./jobs/support-flush.job";
-import { startSupportAutoCloseJob } from "./jobs/support-autoclose.job";
-import { startAnichinScheduleScrapeJob } from "./jobs/anichin-schedule-scrape.job";
+import { startManagedJobs } from "./jobs/job-control.service";
 import { closeRedis, redis, isRedisReady } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
 const app = buildApp();
 let redisDependentJobsStarted = false;
 
-function startRedisDependentJobs() {
+async function startRedisDependentJobs() {
   if (redisDependentJobsStarted) return;
   redisDependentJobsStarted = true;
   startEncodingWorker();
   startUrlUploadWorker();
   startYoutubeR2UploadWorker();
-  startChatCleanupJob({
-    info: (msg) => app.log.info(msg),
-    error: (msg, err) => app.log.error({ err }, msg),
+  await startManagedJobs({
+    logger: {
+      info: (msg) => app.log.info(msg),
+      error: (msg, err) => app.log.error({ err }, msg),
+    },
+    ids: [
+      "watch-reminder",
+      "upload-cleanup",
+      "anichin-schedule-scrape",
+      "chat-cleanup",
+      "support-flush",
+      "support-autoclose",
+    ],
   });
-  startSupportFlushJob({
-    info: (msg) => app.log.info(msg),
-    error: (msg, err) => app.log.error({ err }, msg),
-  });
-  startSupportAutoCloseJob({
-    info: (msg) => app.log.info(msg),
-    error: (msg, err) => app.log.error({ err }, msg),
-  });
-  startAnichinScheduleScrapeJob();
 }
 
 setCacheLogger({
@@ -65,13 +61,8 @@ async function start() {
     const port = Number(process.env.PORT || 3000);
     await app.listen({ port, host: "0.0.0.0" });
     startTrendingRefreshJob();
-    startReminderJob();
-    startUploadCleanupJob({
-      info: (msg) => app.log.info(msg),
-      error: (msg, err) => app.log.error({ err }, msg),
-    });
     if (isRedisReady()) {
-      startRedisDependentJobs();
+      await startRedisDependentJobs();
     } else {
       app.log.warn(
         { redisStatus: redis.status },
@@ -79,7 +70,7 @@ async function start() {
       );
       redis.once("ready", () => {
         app.log.info("Redis ready; starting Redis-dependent jobs");
-        startRedisDependentJobs();
+        void startRedisDependentJobs();
       });
     }
     app.log.info(

@@ -26,51 +26,57 @@ function shouldAutoClose(meta: {
   return nowMs() - meta.lastAgentMessageAt >= idleMs;
 }
 
+export async function runSupportAutoCloseJobCycle(logger: {
+  info: (message: string) => void;
+  error: (message: string, error?: unknown) => void;
+}) {
+  try {
+    const candidates = await redis.srandmember(SUPPORT_ACTIVE_SET_KEY, 30);
+    let checked = 0;
+    let closed = 0;
+
+    for (const conversationId of candidates) {
+      const meta = await readSupportMeta(conversationId);
+      if (!meta) {
+        await redis.srem(SUPPORT_ACTIVE_SET_KEY, conversationId).catch(() => null);
+        continue;
+      }
+      checked += 1;
+      if (!shouldAutoClose(meta)) continue;
+
+      await appendSupportSystemMessage({
+        conversationId,
+        content:
+          "Ticket ditutup otomatis karena tidak ada balasan selama beberapa menit. Kalau masih butuh bantuan, kamu bisa chat lagi di sini.",
+      }).catch(() => null);
+
+      meta.status = "resolved";
+      meta.updatedAt = nowMs();
+      await writeSupportMeta(meta).catch(() => null);
+      await flushSupportConversationToDb({ conversationId, force: true }).catch(
+        () => null,
+      );
+      closed += 1;
+    }
+
+    logger.info(`[support-autoclose] checked=${checked} closed=${closed}`);
+    return { checked, closed };
+  } catch (error) {
+    logger.error("[support-autoclose] failed", error);
+    throw error;
+  }
+}
+
 export function startSupportAutoCloseJob(logger: {
   info: (message: string) => void;
   error: (message: string, error?: unknown) => void;
 }) {
   const intervalMs = 30_000;
 
-  const run = async () => {
-    try {
-      const candidates = await redis.srandmember(SUPPORT_ACTIVE_SET_KEY, 30);
-      let checked = 0;
-      let closed = 0;
-
-      for (const conversationId of candidates) {
-        const meta = await readSupportMeta(conversationId);
-        if (!meta) {
-          await redis.srem(SUPPORT_ACTIVE_SET_KEY, conversationId).catch(() => null);
-          continue;
-        }
-        checked += 1;
-        if (!shouldAutoClose(meta)) continue;
-
-        await appendSupportSystemMessage({
-          conversationId,
-          content:
-            "Ticket ditutup otomatis karena tidak ada balasan selama beberapa menit. Kalau masih butuh bantuan, kamu bisa chat lagi di sini.",
-        }).catch(() => null);
-
-        meta.status = "resolved";
-        meta.updatedAt = nowMs();
-        await writeSupportMeta(meta).catch(() => null);
-        await flushSupportConversationToDb({ conversationId, force: true }).catch(
-          () => null,
-        );
-        closed += 1;
-      }
-
-      logger.info(`[support-autoclose] checked=${checked} closed=${closed}`);
-    } catch (error) {
-      logger.error("[support-autoclose] failed", error);
-    }
-  };
-
-  const timer = setInterval(run, intervalMs);
+  const timer = setInterval(() => {
+    void runSupportAutoCloseJobCycle(logger).catch(() => null);
+  }, intervalMs);
   timer.unref?.();
-  void run();
+  void runSupportAutoCloseJobCycle(logger).catch(() => null);
   return timer;
 }
-

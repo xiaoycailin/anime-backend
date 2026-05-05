@@ -11,6 +11,9 @@ const ORPHAN_GRACE_MS = Number(process.env.UPLOAD_ORPHAN_GRACE_MS ?? 6 * 60 * 60
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
+let lastRunAt: Date | null = null;
+let lastError: string | null = null;
+let totalRuns = 0;
 
 async function expireOverdueSessions() {
   await (prisma as any).uploadSession.updateMany({
@@ -82,12 +85,17 @@ export async function runUploadCleanup(logger?: {
   if (running) return;
   running = true;
   try {
+    totalRuns += 1;
+    lastRunAt = new Date();
     await expireOverdueSessions();
     await cleanCompletedDbSessions();
     await cleanOrphanTempDirs();
+    lastError = null;
     logger?.info?.("[upload-cleanup] sweep done");
   } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
     logger?.error?.("[upload-cleanup] sweep error", error);
+    throw error;
   } finally {
     running = false;
   }
@@ -99,9 +107,9 @@ export function startUploadCleanupJob(logger?: {
 }) {
   if (timer) return;
 
-  void runUploadCleanup(logger);
+  void runUploadCleanup(logger).catch(() => null);
   timer = setInterval(() => {
-    void runUploadCleanup(logger);
+    void runUploadCleanup(logger).catch(() => null);
   }, SWEEP_INTERVAL_MS);
 
   if (typeof timer.unref === "function") timer.unref();
@@ -115,4 +123,15 @@ export function stopUploadCleanupJob() {
   if (!timer) return;
   clearInterval(timer);
   timer = null;
+}
+
+export function getUploadCleanupJobStatus() {
+  return {
+    running: timer !== null,
+    executing: running,
+    intervalMs: SWEEP_INTERVAL_MS,
+    totalRuns,
+    lastRunAt,
+    lastError,
+  };
 }

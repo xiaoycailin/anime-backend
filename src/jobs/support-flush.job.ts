@@ -1,5 +1,21 @@
 import { flushDirtySupportConversations } from "../services/support/support-flush.service";
 
+export async function runSupportFlushJobCycle(logger: {
+  info: (message: string) => void;
+  error: (message: string, error?: unknown) => void;
+}) {
+  try {
+    const result = await flushDirtySupportConversations({ max: 15 });
+    logger.info(
+      `[support-flush] checked=${result.checked} flushed=${result.flushed} locked=${result.locked}`,
+    );
+    return result;
+  } catch (error) {
+    logger.error("[support-flush] failed", error);
+    throw error;
+  }
+}
+
 export function startSupportFlushJob(logger: {
   info: (message: string) => void;
   error: (message: string, error?: unknown) => void;
@@ -10,20 +26,10 @@ export function startSupportFlushJob(logger: {
   );
   const intervalMs = intervalSeconds * 1000;
 
-  const run = async () => {
-    try {
-      const result = await flushDirtySupportConversations({ max: 15 });
-      logger.info(
-        `[support-flush] checked=${result.checked} flushed=${result.flushed} locked=${result.locked}`,
-      );
-    } catch (error) {
-      logger.error("[support-flush] failed", error);
-    }
-  };
-
-  const timer = setInterval(run, intervalMs);
+  const timer = setInterval(() => {
+    void runSupportFlushJobCycle(logger).catch(() => null);
+  }, intervalMs);
   timer.unref?.();
-  void run();
+  void runSupportFlushJobCycle(logger).catch(() => null);
   return timer;
 }
-
