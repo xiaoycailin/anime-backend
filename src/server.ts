@@ -10,6 +10,8 @@ import { startUrlUploadWorker } from "./services/url-upload-queue.service";
 import { startYoutubeR2UploadWorker } from "./services/youtube-r2-upload-queue.service";
 import { startUploadCleanupJob } from "./jobs/upload-cleanup.job";
 import { startChatCleanupJob } from "./jobs/chat-cleanup.job";
+import { startSupportFlushJob } from "./jobs/support-flush.job";
+import { startSupportAutoCloseJob } from "./jobs/support-autoclose.job";
 import { closeRedis, redis, isRedisReady } from "./lib/redis";
 import { setCacheLogger } from "./lib/cache";
 
@@ -23,6 +25,14 @@ function startRedisDependentJobs() {
   startUrlUploadWorker();
   startYoutubeR2UploadWorker();
   startChatCleanupJob({
+    info: (msg) => app.log.info(msg),
+    error: (msg, err) => app.log.error({ err }, msg),
+  });
+  startSupportFlushJob({
+    info: (msg) => app.log.info(msg),
+    error: (msg, err) => app.log.error({ err }, msg),
+  });
+  startSupportAutoCloseJob({
     info: (msg) => app.log.info(msg),
     error: (msg, err) => app.log.error({ err }, msg),
   });

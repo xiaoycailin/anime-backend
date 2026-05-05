@@ -96,6 +96,11 @@ model User {
   refreshTokens          RefreshToken[]
   hostedWatchPartyRooms  WatchPartyRoom[]        @relation("WatchPartyHost")
   watchPartyParticipants WatchPartyParticipant[]
+
+  // Support chat (CS)
+  supportConversations       SupportConversation[] @relation("SupportConversationUser")
+  assignedSupportTickets     SupportConversation[] @relation("SupportConversationAssignedAdmin")
+  sentSupportMessages        SupportMessage[]      @relation("SupportMessageSender")
 }
 
 model RefreshToken {
@@ -828,4 +833,80 @@ model WatchPartyParticipant {
   @@index([roomId, lastSeenAt(sort: Desc)])
   @@index([userId, lastSeenAt(sort: Desc)])
   @@map("watch_party_participants")
+}
+
+// ─── SUPPORT CHAT (CS) ───────────────────────────────────────────────────────
+
+enum SupportConversationStatus {
+  ai_active
+  needs_human
+  human_active
+  resolved
+}
+
+enum SupportConversationPriority {
+  normal
+  high
+  urgent
+}
+
+enum SupportMessageSenderType {
+  user
+  ai
+  admin
+  system
+}
+
+enum SupportMessageSource {
+  app
+  telegram
+  ai
+}
+
+model SupportConversation {
+  id              String                     @id @default(uuid()) @db.VarChar(36)
+  userId          Int
+  status          SupportConversationStatus  @default(ai_active)
+  priority        SupportConversationPriority @default(normal)
+  assignedAdminId Int?
+
+  lastMessageAt Int?
+  unreadUser    Int @default(0) @map("unread_user")
+  unreadAdmin   Int @default(0) @map("unread_admin")
+
+  telegramChatId        String? @map("telegram_chat_id") @db.VarChar(64)
+  telegramThreadId      String? @map("telegram_thread_id") @db.VarChar(64)
+  lastTelegramMessageId String? @map("last_telegram_message_id") @db.VarChar(64)
+
+  lastFlushedAt        DateTime? @map("last_flushed_at")
+  lastFlushedMessageAt BigInt?   @map("last_flushed_message_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user          User    @relation("SupportConversationUser", fields: [userId], references: [id], onDelete: Cascade)
+  assignedAdmin User?   @relation("SupportConversationAssignedAdmin", fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  messages      SupportMessage[]
+
+  @@index([userId, status, updatedAt(sort: Desc)])
+  @@index([status, updatedAt(sort: Desc)])
+  @@index([assignedAdminId, status, updatedAt(sort: Desc)])
+  @@map("support_conversations")
+}
+
+model SupportMessage {
+  id             String               @id @default(uuid()) @db.VarChar(36)
+  conversationId String               @map("conversation_id") @db.VarChar(36)
+  senderType     SupportMessageSenderType
+  senderUserId   Int?                 @map("sender_user_id")
+  content        String               @db.LongText
+  source         SupportMessageSource @default(app)
+  createdAt      DateTime             @default(now()) @map("created_at")
+
+  conversation SupportConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?               @relation("SupportMessageSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt(sort: Asc)])
+  @@index([senderUserId, createdAt(sort: Desc)])
+  @@map("support_messages")
 }

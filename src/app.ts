@@ -7,6 +7,7 @@ import { authPlugin } from "./plugins/auth";
 import { adminGuardPlugin } from "./plugins/adminGuard";
 import { registerErrorHandlers } from "./plugins/error-handler";
 import { registerChatWebSocket } from "./services/chat-ws.service";
+import { registerSupportWebSocket } from "./services/support/support-ws.service";
 import { recordRequestMetric } from "./services/health-metrics.service";
 import { sendResponse } from "./utils/response";
 import fs from "fs";
@@ -92,6 +93,7 @@ export function buildApp() {
   app.register(syncAssetsRoutes, { prefix: "/sync-assets" });
   app.register(apiRoutes, { prefix: "/api" });
   registerChatWebSocket(app);
+  registerSupportWebSocket(app);
   registerErrorHandlers(app);
 
   app.ready(() => {
