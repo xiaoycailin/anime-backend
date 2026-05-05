@@ -1,6 +1,8 @@
 import { redis } from "../lib/redis";
 import {
   getAnichinScheduleScrapeJobStatus,
+  listAnichinEpisodeJobTargets,
+  runAnichinEpisodeJobTarget,
   runAnichinScheduleScrapeJob,
   startAnichinScheduleScrapeJob,
   stopAnichinScheduleScrapeJob,
@@ -49,6 +51,8 @@ type ManagedJob = {
   stop: () => void;
   runNow: () => Promise<unknown>;
   status: () => object;
+  items?: () => Promise<unknown[]>;
+  runItem?: (itemId: string) => Promise<unknown>;
 };
 
 const STATE_KEY_PREFIX = "jobs:control:";
@@ -80,6 +84,8 @@ const jobs: ManagedJob[] = [
     stop: stopAnichinScheduleScrapeJob,
     runNow: runAnichinScheduleScrapeJob,
     status: getAnichinScheduleScrapeJobStatus,
+    items: listAnichinEpisodeJobTargets,
+    runItem: runAnichinEpisodeJobTarget,
   },
   {
     id: "watch-reminder",
@@ -206,6 +212,7 @@ export async function listManagedJobs(category?: string) {
         ]);
         const runtime = job.status();
         const meta = rawMeta ? (JSON.parse(rawMeta) as Record<string, unknown>) : {};
+        const items = job.items ? await job.items() : undefined;
         return {
           id: job.id,
           name: job.name,
@@ -218,6 +225,7 @@ export async function listManagedJobs(category?: string) {
           canStop: true,
           runtime,
           meta,
+          items,
         };
       }),
   );
@@ -257,4 +265,23 @@ export async function controlManagedJob(id: string, action: string) {
   }
 
   throw new Error("Action job tidak valid");
+}
+
+export async function controlManagedJobItem(
+  id: string,
+  itemId: string,
+  action: string,
+) {
+  const job = jobs.find((item) => item.id === id);
+  if (!job?.runItem) throw new Error("Target job tidak mendukung action item");
+  if (action !== "run-now") throw new Error("Action item job tidak valid");
+
+  const result = await job.runItem(itemId);
+  await writeMeta(id, {
+    lastManualRunAt: new Date().toISOString(),
+    lastManualItemId: itemId,
+    lastManualResult: result ?? null,
+    lastManualStatus: "success",
+  });
+  return { action, result };
 }

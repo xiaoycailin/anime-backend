@@ -20,6 +20,31 @@ type JobState = {
   lastStatus: "pending" | "retrying" | "completed" | "exhausted" | "failed";
 };
 
+export type AnichinEpisodeJobTarget = {
+  id: string;
+  animeTitle: string;
+  animeSlug: string;
+  episode: string;
+  episodeNumber: number;
+  scheduledAt: string;
+  releaseTime: string;
+  sourceUrl: string;
+  scheduleStatus: AnichinScheduleItem["scheduleStatus"];
+  jobStatus:
+    | "waiting"
+    | "pending"
+    | "retrying"
+    | "running"
+    | "completed"
+    | "exhausted"
+    | "failed";
+  attempts: number;
+  maxAttempts: number;
+  nextRunAt: string | null;
+  completedAt: string | null;
+  hasEpisode: boolean;
+};
+
 let timer: NodeJS.Timeout | null = null;
 let isRunning = false;
 let lastRunAt: Date | null = null;
@@ -27,12 +52,20 @@ let lastError: string | null = null;
 let totalRuns = 0;
 let totalItemsCompleted = 0;
 
-function stateKey(item: AnichinScheduleItem) {
-  const episodeKey =
+function episodeKey(item: AnichinScheduleItem) {
+  return (
     item.episodeNumber > 0
       ? `ep-${item.episodeNumber}`
-      : `unknown-${item.scheduledAt.slice(0, 10)}`;
-  return `anichin:schedule-job:${item.animeSlug}:${episodeKey}`;
+      : `unknown-${item.scheduledAt.slice(0, 10)}`
+  );
+}
+
+function targetId(item: AnichinScheduleItem) {
+  return `${item.animeSlug}:${episodeKey(item)}`;
+}
+
+function stateKey(item: AnichinScheduleItem) {
+  return `anichin:schedule-job:${item.animeSlug}:${episodeKey(item)}`;
 }
 
 function lockKey(item: AnichinScheduleItem) {
@@ -77,6 +110,21 @@ function shouldRun(state: JobState, now: Date) {
   return new Date(state.nextRunAt).getTime() <= now.getTime();
 }
 
+function targetJobStatus(input: {
+  item: AnichinScheduleItem;
+  state: JobState;
+  locked: boolean;
+  hasEpisode: boolean;
+  now: Date;
+}): AnichinEpisodeJobTarget["jobStatus"] {
+  if (input.locked) return "running";
+  if (input.hasEpisode || input.state.completedAt) return "completed";
+  if (input.state.lastStatus === "exhausted") return "exhausted";
+  if (input.state.lastStatus === "failed") return "failed";
+  if (input.state.lastStatus === "retrying") return "retrying";
+  return isDue(input.item, input.now) ? "pending" : "waiting";
+}
+
 async function hasTargetEpisode(item: AnichinScheduleItem) {
   if (!item.animeSlug || item.episodeNumber <= 0) return false;
 
@@ -89,6 +137,30 @@ async function hasTargetEpisode(item: AnichinScheduleItem) {
   });
 
   return Boolean(episode);
+}
+
+async function existingEpisodeSet(items: AnichinScheduleItem[]) {
+  const candidates = items.filter(
+    (item) => item.animeSlug && item.episodeNumber > 0,
+  );
+  if (candidates.length === 0) return new Set<string>();
+
+  const episodes = await prisma.episode.findMany({
+    where: {
+      OR: candidates.map((item) => ({
+        number: item.episodeNumber,
+        anime: { slug: item.animeSlug },
+      })),
+    },
+    select: {
+      number: true,
+      anime: { select: { slug: true } },
+    },
+  });
+
+  return new Set(
+    episodes.map((episode) => `${episode.anime.slug}:${episode.number}`),
+  );
 }
 
 async function notifyAdmin(input: {
@@ -269,6 +341,53 @@ export async function runAnichinScheduleScrapeJob() {
   } finally {
     isRunning = false;
   }
+}
+
+export async function listAnichinEpisodeJobTargets() {
+  const now = new Date();
+  const schedule = await getAnichinSchedule();
+  const existing = await existingEpisodeSet(schedule);
+
+  return Promise.all(
+    schedule.map(async (item): Promise<AnichinEpisodeJobTarget> => {
+      const state = parseState(await redis.get(stateKey(item)));
+      const locked = Boolean(await redis.exists(lockKey(item)));
+      const hasEpisode =
+        item.episodeNumber > 0 &&
+        existing.has(`${item.animeSlug}:${item.episodeNumber}`);
+
+      return {
+        id: targetId(item),
+        animeTitle: item.animeTitle,
+        animeSlug: item.animeSlug,
+        episode: item.episode,
+        episodeNumber: item.episodeNumber,
+        scheduledAt: item.scheduledAt,
+        releaseTime: item.releaseTime,
+        sourceUrl: item.sourceUrl,
+        scheduleStatus: item.scheduleStatus,
+        jobStatus: targetJobStatus({ item, state, locked, hasEpisode, now }),
+        attempts: state.attempts,
+        maxAttempts: MAX_ATTEMPTS,
+        nextRunAt: state.nextRunAt,
+        completedAt: state.completedAt,
+        hasEpisode,
+      };
+    }),
+  );
+}
+
+export async function runAnichinEpisodeJobTarget(id: string) {
+  const schedule = await getAnichinSchedule();
+  const item = schedule.find((target) => targetId(target) === id);
+  if (!item) throw new Error("Target episode job tidak ditemukan");
+
+  await runItem(item, new Date());
+  return {
+    id: targetId(item),
+    animeTitle: item.animeTitle,
+    episode: item.episode,
+  };
 }
 
 export function startAnichinScheduleScrapeJob(runImmediately = true) {

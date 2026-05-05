@@ -1,5 +1,9 @@
 import type { FastifyPluginAsync } from "fastify";
-import { controlManagedJob, listManagedJobs } from "../../jobs/job-control.service";
+import {
+  controlManagedJob,
+  controlManagedJobItem,
+  listManagedJobs,
+} from "../../jobs/job-control.service";
 import { ok, sendError } from "../../utils/response";
 
 type JobQuery = {
@@ -39,6 +43,34 @@ export const adminJobsRoutes: FastifyPluginAsync = async (app) => {
         status: 400,
         message: error instanceof Error ? error.message : "Gagal kontrol job",
         errorCode: "JOB_CONTROL_FAILED",
+      });
+    }
+  });
+
+  app.post("/:id/items/:itemId/actions", async (request, reply) => {
+    const params = request.params as { id: string; itemId: string };
+    const body = request.body as JobActionBody;
+
+    if (!body.action) {
+      return sendError(reply, {
+        status: 400,
+        message: "Action wajib diisi",
+        errorCode: "JOB_ACTION_REQUIRED",
+      });
+    }
+
+    try {
+      const data = await controlManagedJobItem(
+        params.id,
+        decodeURIComponent(params.itemId),
+        body.action,
+      );
+      return ok(reply, { data, message: "Item job berhasil dikontrol" });
+    } catch (error) {
+      return sendError(reply, {
+        status: 400,
+        message: error instanceof Error ? error.message : "Gagal kontrol item job",
+        errorCode: "JOB_ITEM_CONTROL_FAILED",
       });
     }
   });
