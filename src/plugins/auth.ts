@@ -16,20 +16,26 @@ export const authPlugin: FastifyPluginAsync = fp(async (app) => {
   });
 
   app.decorate("authenticate", async (request) => {
-    try {
-      const token = getAccessToken(request);
-      if (!token) throw new Error("Missing access token");
-      request.user = app.jwt.verify(token);
-    } catch {
-      throw unauthorized("Invalid or expired access token");
+    const tokens = getAccessTokenCandidates(request);
+
+    for (const token of tokens) {
+      try {
+        request.user = app.jwt.verify(token);
+        return;
+      } catch {
+        continue;
+      }
     }
+
+    throw unauthorized("Invalid or expired access token");
   });
 });
 
-function getAccessToken(request: FastifyRequest) {
+function getAccessTokenCandidates(request: FastifyRequest) {
   const header = request.headers.authorization;
   const bearer = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  return bearer || request.cookies?.accessToken || null;
+  const cookieToken = request.cookies?.accessToken?.trim();
+  return [cookieToken, bearer].filter(Boolean) as string[];
 }
 
 export function signAccessToken(
