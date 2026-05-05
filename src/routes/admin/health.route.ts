@@ -11,7 +11,7 @@ import {
   getRouteAverageMs,
   getTopEndpointMetrics,
 } from "../../services/health-metrics.service";
-import { badRequest } from "../../utils/http-error";
+import { badRequest, notFound } from "../../utils/http-error";
 import { ok } from "../../utils/response";
 
 const execFileAsync = promisify(execFile);
@@ -112,14 +112,23 @@ async function writeDeployStatus(job: DeployJob) {
 async function readDeployJob(id: string) {
   const paths = deployJobPaths(id);
   const [statusRaw, logRaw] = await Promise.all([
-    fs.readFile(paths.status, "utf8"),
+    fs.readFile(paths.status, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        throw notFound("Deploy job tidak ditemukan");
+      }
+      throw error;
+    }),
     fs.readFile(paths.log, "utf8").catch(() => ""),
   ]);
 
-  return {
-    ...(JSON.parse(statusRaw) as DeployJob),
-    log: logRaw.slice(-80_000),
-  };
+  try {
+    return {
+      ...(JSON.parse(statusRaw) as DeployJob),
+      log: logRaw.slice(-80_000),
+    };
+  } catch {
+    throw notFound("Deploy job tidak bisa dibaca");
+  }
 }
 
 async function latestDeployJob(target?: DeployTarget) {
