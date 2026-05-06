@@ -13,6 +13,40 @@ import { sendResponse } from "./utils/response";
 import fs from "fs";
 import path from "path";
 
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://weebin.site",
+  "https://www.weebin.site",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+
+function allowedCorsOrigins() {
+  const raw = process.env.CORS_ALLOWED_ORIGINS?.trim();
+  if (!raw) return DEFAULT_ALLOWED_ORIGINS;
+  return raw
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function isAllowedCorsOrigin(origin: string | undefined) {
+  if (!origin) return true;
+
+  const allowed = new Set(allowedCorsOrigins());
+  if (allowed.has(origin)) return true;
+
+  try {
+    const parsed = new URL(origin);
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function buildApp() {
   const app = Fastify({
     trustProxy: true,
@@ -43,7 +77,9 @@ export function buildApp() {
   });
 
   app.register(cors, {
-    origin: true,
+    origin: (origin, callback) => {
+      callback(null, isAllowedCorsOrigin(origin));
+    },
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-guest-watch-id"],
