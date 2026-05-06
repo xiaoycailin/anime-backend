@@ -12,6 +12,14 @@ type MailConfig = {
   provider: "mailcow";
   installPath: string;
   status: "planned" | "installing" | "ready" | "maintenance";
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpUser: string;
+  smtpPassword?: string;
+  smtpPasswordSet: boolean;
+  smtpFromName: string;
+  smtpFromEmail: string;
 };
 
 type MailConfigBody = Partial<Omit<MailConfig, "provider">>;
@@ -24,6 +32,13 @@ const CONFIG_KEYS = {
   adminUrl: "mail.adminUrl",
   installPath: "mail.installPath",
   status: "mail.status",
+  smtpHost: "mail.smtpHost",
+  smtpPort: "mail.smtpPort",
+  smtpSecure: "mail.smtpSecure",
+  smtpUser: "mail.smtpUser",
+  smtpPassword: "mail.smtpPassword",
+  smtpFromName: "mail.smtpFromName",
+  smtpFromEmail: "mail.smtpFromEmail",
 } as const;
 
 const DEFAULT_CONFIG: MailConfig = {
@@ -35,6 +50,14 @@ const DEFAULT_CONFIG: MailConfig = {
   provider: "mailcow",
   installPath: "/opt/mailcow-dockerized",
   status: "planned",
+  smtpHost: "",
+  smtpPort: 587,
+  smtpSecure: false,
+  smtpUser: "",
+  smtpPassword: "",
+  smtpPasswordSet: false,
+  smtpFromName: "Weebin",
+  smtpFromEmail: "",
 };
 
 function isValidDomain(value: string) {
@@ -77,6 +100,18 @@ function normalizeStatus(value?: string): MailConfig["status"] {
   return "planned";
 }
 
+function normalizeSmtpPort(value?: number) {
+  const port = Number(value ?? DEFAULT_CONFIG.smtpPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw badRequest("Port SMTP tidak valid");
+  }
+  return port;
+}
+
+function normalizeBoolean(value?: boolean) {
+  return value === true;
+}
+
 async function readMailConfig(): Promise<MailConfig> {
   const rows = await prisma.siteConfig.findMany({
     where: { key: { in: Object.values(CONFIG_KEYS) } },
@@ -102,6 +137,17 @@ async function readMailConfig(): Promise<MailConfig> {
     provider: "mailcow",
     installPath: map.get(CONFIG_KEYS.installPath) ?? DEFAULT_CONFIG.installPath,
     status: normalizeStatus(map.get(CONFIG_KEYS.status)),
+    smtpHost: map.get(CONFIG_KEYS.smtpHost) ?? hostname,
+    smtpPort: normalizeSmtpPort(Number(map.get(CONFIG_KEYS.smtpPort) ?? 587)),
+    smtpSecure: map.get(CONFIG_KEYS.smtpSecure) === "true",
+    smtpUser: map.get(CONFIG_KEYS.smtpUser) ?? "",
+    smtpPassword: "",
+    smtpPasswordSet: Boolean(map.get(CONFIG_KEYS.smtpPassword)),
+    smtpFromName: map.get(CONFIG_KEYS.smtpFromName) ?? "Weebin",
+    smtpFromEmail:
+      map.get(CONFIG_KEYS.smtpFromEmail) ??
+      map.get(CONFIG_KEYS.smtpUser) ??
+      "",
   };
 }
 
@@ -192,9 +238,21 @@ export const adminMailserverRoutes: FastifyPluginAsync = async (app) => {
       provider: "mailcow",
       installPath: normalizePath(body.installPath ?? current.installPath),
       status: normalizeStatus(body.status ?? current.status),
+      smtpHost: normalizeDomain(body.smtpHost ?? current.smtpHost),
+      smtpPort: normalizeSmtpPort(body.smtpPort ?? current.smtpPort),
+      smtpSecure: normalizeBoolean(body.smtpSecure ?? current.smtpSecure),
+      smtpUser: (body.smtpUser ?? current.smtpUser).trim(),
+      smtpPassword: body.smtpPassword?.trim() ? body.smtpPassword : "",
+      smtpPasswordSet:
+        Boolean(body.smtpPassword?.trim()) || current.smtpPasswordSet,
+      smtpFromName: (body.smtpFromName ?? current.smtpFromName).trim(),
+      smtpFromEmail: (body.smtpFromEmail ?? current.smtpFromEmail).trim(),
     };
 
-    await Promise.all([
+    if (config.smtpHost && !isValidDomain(config.smtpHost))
+      throw badRequest("SMTP host tidak valid");
+
+    const updates = [
       upsertConfig(CONFIG_KEYS.domain, config.domain),
       upsertConfig(CONFIG_KEYS.hostname, config.hostname),
       upsertConfig(CONFIG_KEYS.adminEmail, config.adminEmail),
@@ -202,7 +260,22 @@ export const adminMailserverRoutes: FastifyPluginAsync = async (app) => {
       upsertConfig(CONFIG_KEYS.adminUrl, config.adminUrl),
       upsertConfig(CONFIG_KEYS.installPath, config.installPath),
       upsertConfig(CONFIG_KEYS.status, config.status),
+      upsertConfig(CONFIG_KEYS.smtpHost, config.smtpHost),
+      upsertConfig(CONFIG_KEYS.smtpPort, String(config.smtpPort)),
+      upsertConfig(CONFIG_KEYS.smtpSecure, String(config.smtpSecure)),
+      upsertConfig(CONFIG_KEYS.smtpUser, config.smtpUser),
+      upsertConfig(CONFIG_KEYS.smtpFromName, config.smtpFromName),
+      upsertConfig(CONFIG_KEYS.smtpFromEmail, config.smtpFromEmail),
+    ];
+    if (config.smtpPassword) {
+      updates.push(upsertConfig(CONFIG_KEYS.smtpPassword, config.smtpPassword));
+    }
+
+    await Promise.all([
+      ...updates,
     ]);
+
+    config.smtpPassword = "";
 
     return ok(reply, {
       message: "Konfigurasi mailserver disimpan",
