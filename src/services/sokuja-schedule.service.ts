@@ -1,11 +1,13 @@
 import * as cheerio from "cheerio";
 import type { Element } from "domhandler";
-import { getOrSetCache } from "../lib/cache";
+import { getCache, setCache } from "../lib/cache";
 
 const SOKUJA_ORIGIN = "https://x5.sokuja.uk";
 const SOKUJA_SCHEDULE_URL = `${SOKUJA_ORIGIN}/jadwal-rilis-anime/`;
+const DEFAULT_SKJ_PROXY_BASE_URL = "https://vod-blgr-0x03.weebin.site";
 const SOKUJA_SCHEDULE_CACHE_KEY = "schedule:sokuja:v1";
 const SOKUJA_SCHEDULE_TTL_SECONDS = 20 * 60;
+const SOKUJA_SCHEDULE_REVALIDATE_INTERVAL_MS = 60 * 1000;
 
 const DAY_INDEX: Record<string, number> = {
   mon: 1,
@@ -18,6 +20,8 @@ const DAY_INDEX: Record<string, number> = {
 };
 
 const DAY_SECTIONS = Object.keys(DAY_INDEX);
+let scheduleRefreshPromise: Promise<void> | null = null;
+let lastScheduleRefreshAt = 0;
 
 export type SokujaScheduleItem = {
   id: number;
@@ -107,8 +111,17 @@ function normalizeImageUrl(src: string | undefined) {
   return originalUrl ? new URL(originalUrl, SOKUJA_ORIGIN).href : imageUrl.href;
 }
 
-async function fetchScheduleHtml() {
-  const response = await fetch(SOKUJA_SCHEDULE_URL, {
+function getSokujaProxyBaseUrl() {
+  const value = process.env.SKJ_PROXY_BASE_URL?.trim().replace(/\/+$/g, "");
+  return value || DEFAULT_SKJ_PROXY_BASE_URL;
+}
+
+function getScheduleProxyUrl() {
+  return `${getSokujaProxyBaseUrl()}/jadwal-rilis-anime/`;
+}
+
+async function fetchScheduleResponse(url: string) {
+  return fetch(url, {
     headers: {
       Accept: "text/html,application/xhtml+xml",
       "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -116,6 +129,15 @@ async function fetchScheduleHtml() {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
     },
   });
+}
+
+async function fetchScheduleHtml() {
+  let response = await fetchScheduleResponse(SOKUJA_SCHEDULE_URL);
+
+  if (response.status === 403) {
+    response.body?.cancel().catch(() => undefined);
+    response = await fetchScheduleResponse(getScheduleProxyUrl());
+  }
 
   if (!response.ok) {
     throw new Error(`Failed to fetch Sokuja schedule: ${response.status}`);
@@ -192,10 +214,42 @@ async function scrapeSokujaSchedule(): Promise<SokujaScheduleItem[]> {
   );
 }
 
-export async function getSokujaSchedule() {
-  return getOrSetCache<SokujaScheduleItem[]>(
+async function loadFreshSokujaSchedule() {
+  const items = await scrapeSokujaSchedule();
+  await setCache(
     SOKUJA_SCHEDULE_CACHE_KEY,
+    items,
     SOKUJA_SCHEDULE_TTL_SECONDS,
-    scrapeSokujaSchedule,
   );
+  return items;
+}
+
+function refreshScheduleCacheInBackground() {
+  const now = Date.now();
+  if (scheduleRefreshPromise) return;
+  if (now - lastScheduleRefreshAt < SOKUJA_SCHEDULE_REVALIDATE_INTERVAL_MS) {
+    return;
+  }
+
+  lastScheduleRefreshAt = now;
+  scheduleRefreshPromise = loadFreshSokujaSchedule()
+    .then((items) => {
+      console.info(`[sokuja-schedule] refreshed cache (${items.length} items)`);
+    })
+    .catch((error) => {
+      console.warn("[sokuja-schedule] background refresh failed", error);
+    })
+    .finally(() => {
+      scheduleRefreshPromise = null;
+    });
+}
+
+export async function getSokujaSchedule() {
+  const cached = await getCache<SokujaScheduleItem[]>(SOKUJA_SCHEDULE_CACHE_KEY);
+  if (cached !== null) {
+    refreshScheduleCacheInBackground();
+    return cached;
+  }
+
+  return loadFreshSokujaSchedule();
 }
