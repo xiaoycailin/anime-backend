@@ -40,8 +40,9 @@ function collectRouteFiles(dir: string): string[] {
       /\.route\.(ts|js)$/i.test(entry.name) &&
       entry.name !== "index.ts" &&
       entry.name !== "index.js" &&
-      path.relative(__dirname, fullPath).replace(/\\/g, "/") !==
-        "video-stream/skj.route.ts"
+      !["video-stream/skj.route.ts", "video-stream/skj.route.js"].includes(
+        path.relative(__dirname, fullPath).replace(/\\/g, "/"),
+      )
     ) {
       files.push(fullPath);
     }
