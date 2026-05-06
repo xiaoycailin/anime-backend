@@ -61,6 +61,9 @@ export const skjRoutes: FastifyPluginAsync = async (app) => {
             OR: [
               { value: { contains: "sokuja" } },
               { value: { contains: "storages.sokuja.id" } },
+              { value: { contains: "global.nontony.uk" } },
+              { value: { contains: "88.80.150.16:8092" } },
+              { value: { contains: "vod-blgr-0x03.weebin.site" } },
             ],
           },
         });
