@@ -96,6 +96,20 @@ function dedupeScheduleItems(items: ScheduleItem[]) {
   return Array.from(byKey.values());
 }
 
+async function getOptionalSokujaSchedule() {
+  try {
+    return {
+      items: await getSokujaSchedule(),
+      error: null as string | null,
+    };
+  } catch (error) {
+    return {
+      items: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function getEpisodeSchedule(query: EpisodeScheduleQuery) {
   const days = Math.min(toPositiveInt(query.days, 7), 30);
   const limit = Math.min(toPositiveInt(query.limit, 160), 300);
@@ -119,7 +133,7 @@ export async function getEpisodeSchedule(query: EpisodeScheduleQuery) {
         ? addDays(today, 7)
         : addDays(today, days);
 
-  const [schedules, fallbackEpisodes, anichinSchedule, sokujaSchedule] =
+  const [schedules, fallbackEpisodes, anichinSchedule, sokujaScheduleResult] =
     await Promise.all([
       prisma.animeReleaseSchedule.findMany({
         where: {
@@ -182,8 +196,9 @@ export async function getEpisodeSchedule(query: EpisodeScheduleQuery) {
         },
       }),
       getAnichinSchedule(),
-      getSokujaSchedule(),
+      getOptionalSokujaSchedule(),
     ]);
+  const sokujaSchedule = sokujaScheduleResult.items;
 
   const upcomingItems = anichinSchedule.filter((item) => {
     const scheduledAt = new Date(item.scheduledAt);
@@ -293,9 +308,11 @@ export async function getEpisodeSchedule(query: EpisodeScheduleQuery) {
       status: statusFilter,
       timezone: "Asia/Jakarta",
       source: "anichinSchedule+sokujaSchedule+episodeFallback",
+      sourceWarnings: sokujaScheduleResult.error
+        ? [{ source: "sokuja.schedule", message: sokujaScheduleResult.error }]
+        : [],
       start: start.toISOString(),
       end: end.toISOString(),
     },
   };
 }
-

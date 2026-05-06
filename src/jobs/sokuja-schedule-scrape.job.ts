@@ -92,6 +92,15 @@ function parseState(raw: string | null): JobState {
   }
 }
 
+async function readScheduleForJob() {
+  try {
+    return await getSokujaSchedule();
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    return [];
+  }
+}
+
 async function saveState(key: string, state: JobState) {
   await redis.set(key, JSON.stringify(state), "EX", STATE_TTL_SECONDS);
 }
@@ -344,7 +353,7 @@ export async function runSokujaScheduleScrapeJob() {
     totalRuns += 1;
     lastRunAt = new Date();
     const now = new Date();
-    const schedule = await getSokujaSchedule();
+    const schedule = await readScheduleForJob();
     const dueItems = schedule.filter((item) => isDue(item, now));
 
     for (const item of dueItems) {
@@ -352,15 +361,23 @@ export async function runSokujaScheduleScrapeJob() {
       if (shouldRun(state, now)) await runItem(item, now);
     }
 
-    lastError = null;
+    if (schedule.length > 0) lastError = null;
     return {
       checked: dueItems.length,
       completed: totalItemsCompleted,
       runAt: lastRunAt.toISOString(),
+      skipped: schedule.length === 0,
+      lastError,
     };
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
-    throw error;
+    return {
+      checked: 0,
+      completed: totalItemsCompleted,
+      runAt: lastRunAt?.toISOString() ?? new Date().toISOString(),
+      skipped: true,
+      lastError,
+    };
   } finally {
     isRunning = false;
   }
@@ -368,7 +385,7 @@ export async function runSokujaScheduleScrapeJob() {
 
 export async function listSokujaEpisodeJobTargets() {
   const now = new Date();
-  const schedule = await getSokujaSchedule();
+  const schedule = await readScheduleForJob();
 
   return Promise.all(
     schedule.map(async (item): Promise<SokujaEpisodeJobTarget> => {
@@ -394,7 +411,7 @@ export async function listSokujaEpisodeJobTargets() {
 }
 
 export async function runSokujaEpisodeJobTarget(id: string) {
-  const schedule = await getSokujaSchedule();
+  const schedule = await readScheduleForJob();
   const item = schedule.find((target) => targetId(target) === id);
   if (!item) throw new Error("Target episode job Sokuja tidak ditemukan");
 
@@ -438,4 +455,3 @@ export function getSokujaScheduleScrapeJobStatus() {
     lastError,
   };
 }
-
