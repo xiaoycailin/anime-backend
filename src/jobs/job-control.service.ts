@@ -8,6 +8,14 @@ import {
   stopAnichinScheduleScrapeJob,
 } from "./anichin-schedule-scrape.job";
 import {
+  getSokujaScheduleScrapeJobStatus,
+  listSokujaEpisodeJobTargets,
+  runSokujaEpisodeJobTarget,
+  runSokujaScheduleScrapeJob,
+  startSokujaScheduleScrapeJob,
+  stopSokujaScheduleScrapeJob,
+} from "./sokuja-schedule-scrape.job";
+import {
   getReminderJobStatus,
   startReminderJob,
   stopReminderJob,
@@ -86,6 +94,19 @@ const jobs: ManagedJob[] = [
     status: getAnichinScheduleScrapeJobStatus,
     items: listAnichinEpisodeJobTargets,
     runItem: runAnichinEpisodeJobTarget,
+  },
+  {
+    id: "sokuja-schedule-scrape",
+    name: "Sokuja episode scraper",
+    category: "episode",
+    description: "Scrape episode sesuai jadwal Sokuja dengan retry ringan saat sudah due.",
+    intervalLabel: "Setiap 1 menit, retry target 30 menit",
+    start: (runImmediately = true) => startSokujaScheduleScrapeJob(runImmediately),
+    stop: stopSokujaScheduleScrapeJob,
+    runNow: runSokujaScheduleScrapeJob,
+    status: getSokujaScheduleScrapeJobStatus,
+    items: listSokujaEpisodeJobTargets,
+    runItem: runSokujaEpisodeJobTarget,
   },
   {
     id: "watch-reminder",

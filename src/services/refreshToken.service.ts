@@ -3,6 +3,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { prisma } from "../lib/prisma";
 import { REFRESH_TTL_MS, signRefreshToken } from "../plugins/auth";
 
+const REFRESH_REUSE_GRACE_MS = Number(
+  process.env.REFRESH_REUSE_GRACE_MS ?? 30_000,
+);
+
 export type RefreshTokenUser = {
   id: number;
   email: string;
@@ -51,6 +55,15 @@ export async function issueRefreshToken(
 
 type RefreshJwtPayload = RefreshTokenUser & { jti?: string };
 
+function tokenUserFromPayload(payload: RefreshJwtPayload): RefreshTokenUser {
+  return {
+    id: payload.id,
+    email: payload.email,
+    username: payload.username,
+    role: payload.role,
+  };
+}
+
 export async function rotateRefreshToken(
   app: FastifyInstance,
   presented: string,
@@ -70,6 +83,30 @@ export async function rotateRefreshToken(
   if (!row) throw new RefreshTokenError("Refresh token tidak valid");
 
   if (row.revokedAt) {
+    const withinGrace =
+      row.replacedById &&
+      Date.now() - row.revokedAt.getTime() <= REFRESH_REUSE_GRACE_MS;
+
+    if (withinGrace) {
+      const replacement = await prisma.refreshToken.findUnique({
+        where: { id: row.replacedById ?? "" },
+      });
+
+      if (
+        replacement &&
+        replacement.userId === row.userId &&
+        !replacement.revokedAt &&
+        replacement.expiresAt.getTime() >= Date.now()
+      ) {
+        const tokenUser = tokenUserFromPayload(payload);
+        return {
+          user: tokenUser,
+          refreshToken: signRefreshToken(app, tokenUser, replacement.id),
+          reusedWithinGrace: true,
+        };
+      }
+    }
+
     // Token reuse detected — someone replayed an already-rotated token.
     // Defensively revoke every active token in this user's session family.
     await prisma.refreshToken.updateMany({
@@ -105,12 +142,7 @@ export async function rotateRefreshToken(
     }),
   ]);
 
-  const tokenUser: RefreshTokenUser = {
-    id: payload.id,
-    email: payload.email,
-    username: payload.username,
-    role: payload.role,
-  };
+  const tokenUser = tokenUserFromPayload(payload);
 
   return {
     user: tokenUser,

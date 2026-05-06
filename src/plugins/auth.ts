@@ -4,7 +4,7 @@ import jwt from "@fastify/jwt";
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 import { unauthorized } from "../utils/http-error";
 
-const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_TTL ?? "15m";
+const ACCESS_TOKEN_TTL = process.env.JWT_ACCESS_TTL ?? "2h";
 const REFRESH_TOKEN_TTL = process.env.JWT_REFRESH_TTL ?? "7d";
 
 export const authPlugin: FastifyPluginAsync = fp(async (app) => {
@@ -53,6 +53,7 @@ export function signRefreshToken(
   return app.jwt.sign(user, { expiresIn: REFRESH_TOKEN_TTL, jti });
 }
 
+export const ACCESS_TTL_MS = parseTtlMs(ACCESS_TOKEN_TTL);
 export const REFRESH_TTL_MS = parseTtlMs(REFRESH_TOKEN_TTL);
 
 function parseTtlMs(ttl: string): number {
@@ -76,7 +77,7 @@ export const refreshCookieOptions = {
   sameSite: "lax" as const,
   secure: process.env.NODE_ENV === "production",
   path: "/",
-  maxAge: 60 * 60 * 24 * 7,
+  maxAge: Math.floor(REFRESH_TTL_MS / 1000),
 };
 
 export const accessCookieOptions = {
@@ -84,5 +85,5 @@ export const accessCookieOptions = {
   sameSite: "lax" as const,
   secure: process.env.NODE_ENV === "production",
   path: "/",
-  maxAge: 15 * 60,
+  maxAge: Math.floor(ACCESS_TTL_MS / 1000),
 };

@@ -1,9 +1,9 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import type { ReactionType, ReleaseScheduleStatus } from "@prisma/client";
+import type { ReactionType } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { addExp } from "../../services/exp.service";
 import { createRoleNotification } from "../../services/notification.service";
-import { getAnichinSchedule } from "../../services/anichin-schedule.service";
+import { getEpisodeSchedule } from "../../services/episode-schedule.service";
 import { ok, sendError } from "../../utils/response";
 import { badRequest, notFound } from "../../utils/http-error";
 import { normalizeTitle } from "../../utils/season-parser";
@@ -34,45 +34,6 @@ function formatRelativeTime(date: Date) {
 
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}h lalu`;
-}
-
-function formatScheduleDate(date: Date) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Jakarta",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
-function formatScheduleTime(date: Date) {
-  return new Intl.DateTimeFormat("id-ID", {
-    timeZone: "Asia/Jakarta",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function startOfJakartaDay(date = new Date()) {
-  const key = formatScheduleDate(date);
-  const [year, month, day] = key.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day, -7, 0, 0, 0));
-}
-
-function addDays(date: Date, days: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function scheduleStatus(input: {
-  status?: string | null;
-  releasedAt?: Date | null;
-  episodeId?: number | null;
-}) {
-  if (input.status === "cancelled") return "cancelled";
-  if (input.releasedAt || input.episodeId) return "released";
-  return "upcoming";
 }
 
 async function optionalUserId(
@@ -206,235 +167,12 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/schedule", async (request, reply) => {
-    const query = request.query as {
-      days?: string;
-      limit?: string;
-      range?: string;
-      status?: string;
-    };
-    const days = Math.min(toPositiveInt(query.days, 7), 30);
-    const limit = Math.min(toPositiveInt(query.limit, 160), 300);
-    const today = startOfJakartaDay();
-    const range = query.range === "today" || query.range === "week"
-      ? query.range
-      : "rolling";
-    const statusFilter = ["upcoming", "released"].includes(
-      query.status ?? "",
-    )
-      ? query.status
-      : "all";
-    const includeLegacySchedules = statusFilter !== "upcoming";
-    const scheduleDbStatus =
-      statusFilter === "all" || statusFilter === "released"
-        ? "released"
-        : undefined;
-    const start =
-      range === "today" || range === "week"
-        ? today
-        : addDays(today, -(days - 1));
-    const end =
-      range === "today"
-        ? addDays(today, 1)
-        : range === "week"
-          ? addDays(today, 7)
-          : addDays(today, days);
-
     try {
-      const [schedules, fallbackEpisodes, anichinSchedule] = await Promise.all([
-        prisma.animeReleaseSchedule.findMany({
-          where: {
-            ...(includeLegacySchedules ? {} : { id: -1 }),
-            scheduledAt: {
-              gte: start,
-              lt: end,
-            },
-            ...(scheduleDbStatus
-              ? { status: scheduleDbStatus as ReleaseScheduleStatus }
-              : {}),
-          },
-          orderBy: [{ scheduledAt: "asc" }],
-          take: limit,
-          include: {
-            anime: {
-              select: {
-                slug: true,
-                title: true,
-                thumbnail: true,
-                status: true,
-                type: true,
-              },
-            },
-            episode: {
-              select: {
-                id: true,
-                slug: true,
-                title: true,
-                thumbnail: true,
-                createdAt: true,
-              },
-            },
-          },
-        }),
-        prisma.episode.findMany({
-          where: {
-            createdAt: {
-              gte: start,
-              lt: end,
-            },
-            status: "published",
-            releaseSchedule: null,
-          },
-          orderBy: [{ createdAt: "desc" }],
-          take: limit,
-          select: {
-            id: true,
-            animeId: true,
-            number: true,
-            title: true,
-            date: true,
-            createdAt: true,
-            scheduledReleaseAt: true,
-            slug: true,
-            thumbnail: true,
-            anime: {
-              select: {
-                slug: true,
-                title: true,
-                thumbnail: true,
-                status: true,
-                type: true,
-              },
-            },
-          },
-        }),
-        getAnichinSchedule(),
-      ]);
-
-      type ScheduleItem = {
-        id: number;
-        animeId: number;
-        animeTitle: string;
-        animeSlug: string;
-        title: string;
-        episode: string;
-        episodeNumber: number;
-        thumbnail: string | null;
-        href: string;
-        scheduledAt: string;
-        releasedAt: string | null;
-        releaseTime: string;
-        scheduleStatus: string;
-        scheduleSource: string;
-        notificationSent: boolean;
-        animeStatus: string | null;
-        animeType: string | null;
-      };
-
-      const upcomingItems = anichinSchedule.filter((item) => {
-        const scheduledAt = new Date(item.scheduledAt);
-        if (scheduledAt < start || scheduledAt >= end) return false;
-        if (statusFilter === "upcoming") return item.scheduleStatus === "upcoming";
-        if (statusFilter === "released") return false;
-        return true;
-      });
-
-      const items: ScheduleItem[] = [
-        ...schedules.map((item: any) => {
-          const computedStatus = scheduleStatus({
-            status: item.status,
-            releasedAt: item.releasedAt,
-            episodeId: item.episodeId,
-          });
-          return {
-            id: item.episode?.id ?? item.id,
-            animeId: item.animeId,
-            animeTitle: normalizeTitle(item.anime.title),
-            animeSlug: item.anime.slug,
-            title:
-              item.episode?.title ??
-              `${normalizeTitle(item.anime.title)} Episode ${item.episodeNumber}`,
-            episode: `Ep ${item.episodeNumber}`,
-            episodeNumber: item.episodeNumber,
-            thumbnail: item.episode?.thumbnail ?? item.anime.thumbnail,
-            href: item.episode?.slug
-              ? `/anime/${item.anime.slug}/${item.episode.slug}`
-              : `/anime/${item.anime.slug}`,
-            scheduledAt: item.scheduledAt.toISOString(),
-            releasedAt: item.releasedAt?.toISOString() ?? null,
-            releaseTime: formatScheduleTime(item.scheduledAt),
-            scheduleStatus: computedStatus,
-            scheduleSource: item.source,
-            notificationSent: Boolean(item.notificationSentAt),
-            animeStatus: item.anime.status,
-            animeType: item.anime.type,
-          };
-        }),
-        ...fallbackEpisodes.map((item) => ({
-          id: item.id,
-          animeId: item.animeId,
-          animeTitle: normalizeTitle(item.anime.title),
-          animeSlug: item.anime.slug,
-          title: item.title,
-          episode: `Ep ${item.number}`,
-          episodeNumber: item.number,
-          thumbnail: item.thumbnail ?? item.anime.thumbnail,
-          href: `/anime/${item.anime.slug}/${item.slug}`,
-          scheduledAt: (item.scheduledReleaseAt ?? item.createdAt).toISOString(),
-          releasedAt: item.createdAt.toISOString(),
-          releaseTime: formatScheduleTime(item.scheduledReleaseAt ?? item.createdAt),
-          scheduleStatus: "released",
-          scheduleSource: item.scheduledReleaseAt ? "episode" : "episode.createdAt",
-          notificationSent: false,
-          animeStatus: item.anime.status,
-          animeType: item.anime.type,
-        })),
-        ...upcomingItems,
-      ]
-        .filter((item) =>
-          statusFilter === "all" ? true : item.scheduleStatus === statusFilter,
-        )
-        .sort((left, right) => {
-          const leftTime = new Date(left.scheduledAt).getTime();
-          const rightTime = new Date(right.scheduledAt).getTime();
-          if (left.scheduleStatus === "upcoming" || right.scheduleStatus === "upcoming") {
-            return leftTime - rightTime;
-          }
-          return rightTime - leftTime;
-        })
-        .slice(0, limit);
-
-      const groups = new Map<string, {
-        date: string;
-        count: number;
-        episodes: ScheduleItem[];
-      }>();
-
-      for (const item of items) {
-        const dateKey = formatScheduleDate(new Date(item.scheduledAt));
-        const group = groups.get(dateKey) ?? {
-          date: dateKey,
-          count: 0,
-          episodes: [],
-        };
-
-        group.episodes.push(item);
-        group.count = group.episodes.length;
-        groups.set(dateKey, group);
-      }
-
+      const result = await getEpisodeSchedule(request.query as Record<string, string>);
       return ok(reply, {
         message: "Episode schedule fetched successfully",
-        data: Array.from(groups.values()),
-        meta: {
-          days,
-          limit,
-          range,
-          status: statusFilter,
-          timezone: "Asia/Jakarta",
-          source: "anichinSchedule+episodeFallback",
-          start: start.toISOString(),
-          end: end.toISOString(),
-        },
+        data: result.data,
+        meta: result.meta,
       });
     } catch (error) {
       request.log.error(error);

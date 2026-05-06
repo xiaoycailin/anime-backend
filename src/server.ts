@@ -29,6 +29,7 @@ async function startRedisDependentJobs() {
       "watch-reminder",
       "upload-cleanup",
       "anichin-schedule-scrape",
+      "sokuja-schedule-scrape",
       "chat-cleanup",
       "support-flush",
       "support-autoclose",
