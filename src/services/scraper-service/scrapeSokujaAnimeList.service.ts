@@ -7,6 +7,7 @@ import type {
 } from "./types";
 
 const SOKUJA_ORIGIN = "https://x5.sokuja.uk";
+const DEFAULT_SKJ_PROXY_BASE_URL = "http://88.80.150.16:8092";
 const DEFAULT_PAGE_SIZE = 24;
 
 export type SokujaAnimeCard = {
@@ -305,18 +306,61 @@ export async function fetchSokujaEpisodeMirrors(episodeId: number, referer: stri
     },
   });
 
+  const payload =
+    response.ok || !shouldUseSokujaProxyFallback(response.status)
+      ? await readMirrorPayload(response)
+      : await fetchSokujaEpisodeMirrorsViaProxy(episodeId);
+
+  return mirrorPayloadToServers(payload);
+}
+
+function shouldUseSokujaProxyFallback(status: number) {
+  return status === 403 || status === 429;
+}
+
+function sokujaProxyBaseUrl() {
+  return (
+    process.env.SKJ_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
+    DEFAULT_SKJ_PROXY_BASE_URL
+  );
+}
+
+async function readMirrorPayload(response: Response) {
   if (!response.ok) {
     throw new Error(`Failed to fetch Sokuja video mirrors: ${response.status}`);
   }
 
-  const payload = (await response.json()) as {
+  return (await response.json()) as {
     mirrors?: Array<{
       serverName?: string;
       embedUrl?: string;
       quality?: string;
     }>;
   };
+}
 
+async function fetchSokujaEpisodeMirrorsViaProxy(episodeId: number) {
+  const response = await fetch(
+    `${sokujaProxyBaseUrl()}/api/skj/video-mirrors?e=${episodeId}`,
+    {
+      headers: {
+        Accept: "application/json,text/plain,*/*",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+      },
+    },
+  );
+
+  return readMirrorPayload(response);
+}
+
+function mirrorPayloadToServers(payload: {
+  mirrors?: Array<{
+    serverName?: string;
+    embedUrl?: string;
+    quality?: string;
+  }>;
+}) {
   return (payload.mirrors ?? [])
     .map((mirror, index) => ({
       label: `${mirror.serverName ?? "SOKUJA"} ${mirror.quality ?? ""}`.trim(),

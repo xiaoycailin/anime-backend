@@ -41,7 +41,9 @@ function isAllowedCorsOrigin(origin: string | undefined) {
     return (
       parsed.hostname === "localhost" ||
       parsed.hostname === "127.0.0.1" ||
-      parsed.hostname.endsWith(".localhost")
+      parsed.hostname.endsWith(".localhost") ||
+      parsed.hostname === "weebin.site" ||
+      parsed.hostname.endsWith(".weebin.site")
     );
   } catch {
     return false;
@@ -83,7 +85,8 @@ export function buildApp() {
     },
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-guest-watch-id"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-guest-watch-id", "Range"],
+    exposedHeaders: ["Accept-Ranges", "Content-Length", "Content-Range", "Content-Type"],
   });
 
   app.register(multipart, {

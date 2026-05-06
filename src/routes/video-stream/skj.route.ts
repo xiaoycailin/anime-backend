@@ -6,6 +6,7 @@ import { VIDEO_SEGMENT_CACHE_CONTROL } from "../../utils/video-stream-cache";
 const FALLBACK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 const SOKUJA_REFERER = "https://x5.sokuja.uk/";
+const DEFAULT_SKJ_PROXY_BASE_URL = "http://88.80.150.16:8092";
 const FORWARDED_HEADERS = [
   "content-type",
   "content-length",
@@ -71,6 +72,17 @@ function buildHeaders(requestHeaders: Record<string, unknown>) {
   return headers;
 }
 
+function sokujaProxyBaseUrl() {
+  return (
+    process.env.SKJ_PROXY_BASE_URL?.trim().replace(/\/+$/, "") ||
+    DEFAULT_SKJ_PROXY_BASE_URL
+  );
+}
+
+function shouldRedirectToSokujaProxy(status: number) {
+  return status === 403 || status === 429;
+}
+
 export const skjRoutes: FastifyPluginAsync = async (app) => {
   async function streamSokuja(request: any, reply: any, method: "GET" | "HEAD") {
     const params = request.params as { "*": string };
@@ -92,6 +104,10 @@ export const skjRoutes: FastifyPluginAsync = async (app) => {
       });
 
       if (!upstream.ok && upstream.status !== 206) {
+        if (shouldRedirectToSokujaProxy(upstream.status)) {
+          return reply.redirect(307, `${sokujaProxyBaseUrl()}${request.url}`);
+        }
+
         return sendError(reply, {
           status: upstream.status,
           message: "Upstream Sokuja stream request failed",
