@@ -15,6 +15,7 @@ type MailConfig = {
   smtpHost: string;
   smtpPort: number;
   smtpSecure: boolean;
+  smtpTlsRejectUnauthorized: boolean;
   smtpUser: string;
   smtpPassword?: string;
   smtpPasswordSet: boolean;
@@ -35,6 +36,7 @@ const CONFIG_KEYS = {
   smtpHost: "mail.smtpHost",
   smtpPort: "mail.smtpPort",
   smtpSecure: "mail.smtpSecure",
+  smtpTlsRejectUnauthorized: "mail.smtpTlsRejectUnauthorized",
   smtpUser: "mail.smtpUser",
   smtpPassword: "mail.smtpPassword",
   smtpFromName: "mail.smtpFromName",
@@ -53,6 +55,7 @@ const DEFAULT_CONFIG: MailConfig = {
   smtpHost: "",
   smtpPort: 587,
   smtpSecure: false,
+  smtpTlsRejectUnauthorized: true,
   smtpUser: "",
   smtpPassword: "",
   smtpPasswordSet: false,
@@ -140,6 +143,8 @@ async function readMailConfig(): Promise<MailConfig> {
     smtpHost: map.get(CONFIG_KEYS.smtpHost) ?? hostname,
     smtpPort: normalizeSmtpPort(Number(map.get(CONFIG_KEYS.smtpPort) ?? 587)),
     smtpSecure: map.get(CONFIG_KEYS.smtpSecure) === "true",
+    smtpTlsRejectUnauthorized:
+      map.get(CONFIG_KEYS.smtpTlsRejectUnauthorized) !== "false",
     smtpUser: map.get(CONFIG_KEYS.smtpUser) ?? "",
     smtpPassword: "",
     smtpPasswordSet: Boolean(map.get(CONFIG_KEYS.smtpPassword)),
@@ -241,6 +246,9 @@ export const adminMailserverRoutes: FastifyPluginAsync = async (app) => {
       smtpHost: normalizeDomain(body.smtpHost ?? current.smtpHost),
       smtpPort: normalizeSmtpPort(body.smtpPort ?? current.smtpPort),
       smtpSecure: normalizeBoolean(body.smtpSecure ?? current.smtpSecure),
+      smtpTlsRejectUnauthorized: normalizeBoolean(
+        body.smtpTlsRejectUnauthorized ?? current.smtpTlsRejectUnauthorized
+      ),
       smtpUser: (body.smtpUser ?? current.smtpUser).trim(),
       smtpPassword: body.smtpPassword?.trim() ? body.smtpPassword : "",
       smtpPasswordSet:
@@ -263,6 +271,10 @@ export const adminMailserverRoutes: FastifyPluginAsync = async (app) => {
       upsertConfig(CONFIG_KEYS.smtpHost, config.smtpHost),
       upsertConfig(CONFIG_KEYS.smtpPort, String(config.smtpPort)),
       upsertConfig(CONFIG_KEYS.smtpSecure, String(config.smtpSecure)),
+      upsertConfig(
+        CONFIG_KEYS.smtpTlsRejectUnauthorized,
+        String(config.smtpTlsRejectUnauthorized)
+      ),
       upsertConfig(CONFIG_KEYS.smtpUser, config.smtpUser),
       upsertConfig(CONFIG_KEYS.smtpFromName, config.smtpFromName),
       upsertConfig(CONFIG_KEYS.smtpFromEmail, config.smtpFromEmail),

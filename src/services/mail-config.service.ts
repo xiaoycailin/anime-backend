@@ -5,6 +5,7 @@ export type SmtpConfig = {
   host: string;
   port: number;
   secure: boolean;
+  tlsRejectUnauthorized: boolean;
   user: string;
   pass: string;
   fromName: string;
@@ -15,6 +16,7 @@ const SMTP_KEYS = {
   host: "mail.smtpHost",
   port: "mail.smtpPort",
   secure: "mail.smtpSecure",
+  tlsRejectUnauthorized: "mail.smtpTlsRejectUnauthorized",
   user: "mail.smtpUser",
   pass: "mail.smtpPassword",
   fromName: "mail.smtpFromName",
@@ -33,6 +35,7 @@ export async function readSmtpConfig() {
     host: map.get(SMTP_KEYS.host)?.trim() ?? "",
     port: Number.isFinite(port) ? port : 587,
     secure: map.get(SMTP_KEYS.secure) === "true",
+    tlsRejectUnauthorized: map.get(SMTP_KEYS.tlsRejectUnauthorized) !== "false",
     user: map.get(SMTP_KEYS.user)?.trim() ?? "",
     pass: map.get(SMTP_KEYS.pass) ?? "",
     fromName: map.get(SMTP_KEYS.fromName)?.trim() || "Weebin",
@@ -59,10 +62,12 @@ export function createMailTransport(config: SmtpConfig) {
       user: config.user,
       pass: config.pass,
     },
+    tls: {
+      rejectUnauthorized: config.tlsRejectUnauthorized,
+    },
   });
 }
 
 export function formatFrom(config: SmtpConfig) {
   return `"${config.fromName.replace(/"/g, "'")}" <${config.fromEmail}>`;
 }
-
