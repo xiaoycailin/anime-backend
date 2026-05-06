@@ -7,7 +7,7 @@ import type {
 } from "./types";
 
 const SOKUJA_ORIGIN = "https://x5.sokuja.uk";
-const DEFAULT_SKJ_PROXY_BASE_URL = "http://88.80.150.16:8092";
+const DEFAULT_SKJ_PROXY_BASE_URL = "https://vod-blgr-0x03.weebin.site";
 const DEFAULT_PAGE_SIZE = 24;
 
 export type SokujaAnimeCard = {

@@ -6,7 +6,7 @@ import { VIDEO_SEGMENT_CACHE_CONTROL } from "../../utils/video-stream-cache";
 const FALLBACK_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 const SOKUJA_REFERER = "https://x5.sokuja.uk/";
-const DEFAULT_SKJ_PROXY_BASE_URL = "http://88.80.150.16:8092";
+const DEFAULT_SKJ_PROXY_BASE_URL = "https://vod-blgr-0x03.weebin.site";
 const FORWARDED_HEADERS = [
   "content-type",
   "content-length",
