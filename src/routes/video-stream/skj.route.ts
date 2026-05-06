@@ -105,7 +105,7 @@ export const skjRoutes: FastifyPluginAsync = async (app) => {
 
       if (!upstream.ok && upstream.status !== 206) {
         if (shouldRedirectToSokujaProxy(upstream.status)) {
-          return reply.redirect(307, `${sokujaProxyBaseUrl()}${request.url}`);
+          return reply.redirect(`${sokujaProxyBaseUrl()}${request.url}`, 307);
         }
 
         return sendError(reply, {
