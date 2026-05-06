@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import { apiRoutes } from "./routes";
 import { syncAssetsRoutes } from "./routes/sync-assets/sync-assets.route";
+import { skjRoutes } from "./routes/video-stream/skj.route";
 import { authPlugin } from "./plugins/auth";
 import { adminGuardPlugin } from "./plugins/adminGuard";
 import { registerErrorHandlers } from "./plugins/error-handler";
@@ -127,6 +128,7 @@ export function buildApp() {
   });
 
   app.register(syncAssetsRoutes, { prefix: "/sync-assets" });
+  app.register(skjRoutes, { prefix: "/api/video-stream/skj" });
   app.register(apiRoutes, { prefix: "/api" });
   registerChatWebSocket(app);
   registerSupportWebSocket(app);

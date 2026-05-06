@@ -90,17 +90,26 @@ function isDailymotionLikeHost(hostname: string) {
   return hostname.includes("dailymotion.com") || hostname.includes("dmcdn.net");
 }
 
+function isSokujaStorageHost(hostname: string) {
+  return hostname === "storages.sokuja.id" || hostname.endsWith(".sokuja.id");
+}
+
 function buildUpstreamHeaders(
   requestHeaders: Record<string, unknown>,
   target: URL,
 ) {
   const isDailymotion = target.hostname.includes("dailymotion.com");
+  const isSokujaStorage = isSokujaStorageHost(target.hostname);
   const refererBase = isDailymotion
     ? "https://www.dailymotion.com/"
-    : `${target.protocol}//${target.host}/`;
+    : isSokujaStorage
+      ? "https://x5.sokuja.uk/"
+      : `${target.protocol}//${target.host}/`;
   const originBase = isDailymotion
     ? "https://www.dailymotion.com"
-    : `${target.protocol}//${target.host}`;
+    : isSokujaStorage
+      ? "https://x5.sokuja.uk"
+      : `${target.protocol}//${target.host}`;
 
   const headers: Record<string, string> = {
     "user-agent":
@@ -135,6 +144,12 @@ function buildUpstreamHeaders(
     headers["sec-fetch-dest"] = "video";
     headers["sec-fetch-mode"] = "cors";
     headers["sec-fetch-site"] = "cross-site";
+  }
+
+  if (isSokujaStorage) {
+    headers["sec-fetch-dest"] = "video";
+    headers["sec-fetch-mode"] = "no-cors";
+    headers["sec-fetch-site"] = "same-site";
   }
 
   return headers;

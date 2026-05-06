@@ -530,6 +530,8 @@ model Episode {
   dislikes           Int       @default(0)
   skipIntroSeconds   Float?
   skipOutroSeconds   Float?
+  sourceProvider     String?   @db.VarChar(40)
+  sourceVideoId      String?   @db.VarChar(80)
   scheduledReleaseAt DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @default(now()) @updatedAt
@@ -545,6 +547,7 @@ model Episode {
 
   // @@unique([animeId, number]) ← HAPUS INI
 
+  @@index([sourceProvider, sourceVideoId])
   @@map("episodes")
 }
 

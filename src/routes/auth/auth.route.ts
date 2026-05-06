@@ -466,9 +466,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/login", async (request, reply) => {
-    const body = request.body as AuthBody;
+    const body = (request.body ?? {}) as AuthBody;
     const email = normalizeEmail(body.email);
     const password = body.password ?? "";
+
+    if (!email) {
+      throw badRequest("Email wajib diisi");
+    }
+
+    if (!password) {
+      throw badRequest("Password wajib diisi");
+    }
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !(await compare(password, user.password))) {

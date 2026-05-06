@@ -1,6 +1,7 @@
 export interface AnimeServer {
   value: string | undefined;
   label: string;
+  isPrimary?: boolean;
 }
 
 export interface AnimeEpisode {
@@ -9,6 +10,9 @@ export interface AnimeEpisode {
   href: string | null;
   sub: string;
   date: string;
+  thumbnail?: string | null;
+  sourceEpisodeId?: number | null;
+  status?: string;
   servers?: AnimeServer[]; // opsional, hanya ada setelah getDetailEpisode
 }
 

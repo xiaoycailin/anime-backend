@@ -1554,7 +1554,12 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const cached = await getCache<Record<string, unknown>>(cacheKey);
-      if (cached) {
+      const cacheHasSourceFields =
+        cached &&
+        Object.prototype.hasOwnProperty.call(cached, "sourceProvider") &&
+        Object.prototype.hasOwnProperty.call(cached, "sourceVideoId");
+
+      if (cached && cacheHasSourceFields) {
         const publicData = stripPublicSubtitleTrackCues(cached);
         const accessEpisode = episodeAccessInput(publicData);
 
@@ -1612,6 +1617,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           views: true,
           skipIntroSeconds: true,
           skipOutroSeconds: true,
+          sourceProvider: true,
+          sourceVideoId: true,
           servers: {
             orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
             select: {
@@ -1970,6 +1977,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         views: episode.views,
         skipIntroSeconds: episode.skipIntroSeconds,
         skipOutroSeconds: episode.skipOutroSeconds,
+        sourceProvider: episode.sourceProvider,
+        sourceVideoId: episode.sourceVideoId,
         episodes: watchSeasons.length > 0 ? [] : episode.anime.episodes,
         seasons: watchSeasons,
         anime: {
