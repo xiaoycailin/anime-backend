@@ -343,9 +343,18 @@ export async function runAnichinScheduleScrapeJob() {
   }
 }
 
+async function readScheduleForJob() {
+  try {
+    return await getAnichinSchedule();
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    return [];
+  }
+}
+
 export async function listAnichinEpisodeJobTargets() {
   const now = new Date();
-  const schedule = await getAnichinSchedule();
+  const schedule = await readScheduleForJob();
   const existing = await existingEpisodeSet(schedule);
 
   return Promise.all(
@@ -378,7 +387,7 @@ export async function listAnichinEpisodeJobTargets() {
 }
 
 export async function runAnichinEpisodeJobTarget(id: string) {
-  const schedule = await getAnichinSchedule();
+  const schedule = await readScheduleForJob();
   const item = schedule.find((target) => targetId(target) === id);
   if (!item) throw new Error("Target episode job tidak ditemukan");
 

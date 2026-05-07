@@ -233,7 +233,7 @@ export async function listManagedJobs(category?: string) {
         ]);
         const runtime = job.status();
         const meta = rawMeta ? (JSON.parse(rawMeta) as Record<string, unknown>) : {};
-        const items = job.items ? await job.items() : undefined;
+        const items = job.items ? await job.items().catch(() => undefined) : undefined;
         return {
           id: job.id,
           name: job.name,
