@@ -1241,6 +1241,71 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/index", async (request, reply) => {
+    const cacheKey = CACHE_KEYS.animeIndex();
+
+    try {
+      setPublicCache(reply, PUBLIC_CACHE.SECTION);
+
+      type IndexItem = {
+        slug: string;
+        title: string;
+        type: string | null;
+        status: "Ongoing" | "Completed" | null;
+        year: number | null;
+        totalEpisodes: number | null;
+      };
+
+      const cached = await getCache<IndexItem[]>(cacheKey);
+      if (cached) {
+        return ok(reply, {
+          message: "Anime index fetched successfully",
+          data: cached,
+          meta: { total: cached.length, cache: "hit" },
+        });
+      }
+
+      const animes = await prisma.anime.findMany({
+        select: {
+          slug: true,
+          title: true,
+          type: true,
+          status: true,
+          released: true,
+          totalEpisodes: true,
+        },
+        orderBy: { title: "asc" },
+      });
+
+      const data: IndexItem[] = animes.map((a) => {
+        const yearMatch = a.released?.match(/(\d{4})/);
+        return {
+          slug: a.slug,
+          title: a.title,
+          type: a.type ?? null,
+          status: a.status ? toAnimeStatus(a.status) : null,
+          year: yearMatch ? Number(yearMatch[1]) : null,
+          totalEpisodes: a.totalEpisodes ?? null,
+        };
+      });
+
+      await setCache(cacheKey, data, CACHE_TTL.INDEX);
+
+      return ok(reply, {
+        message: "Anime index fetched successfully",
+        data,
+        meta: { total: data.length, cache: "miss" },
+      });
+    } catch (error) {
+      request.log.error(error);
+      return sendError(reply, {
+        status: 500,
+        message: "Failed to fetch anime index",
+        errorCode: "ANIME_INDEX_FETCH_FAILED",
+      });
+    }
+  });
+
   app.get("/genres", async (request, reply) => {
     const cacheKey = CACHE_KEYS.genres();
 

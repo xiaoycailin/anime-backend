@@ -17,6 +17,7 @@ export const CACHE_TTL = {
   GENRES: 3600,
   TAGS: 3600,
   STUDIOS: 3600,
+  INDEX: 600,
   SUBTITLES: 36000,
 } as const;
 
@@ -30,6 +31,7 @@ export const CACHE_KEYS = {
   latestEpisodes: (limit: number) => `episode:list:latest:${limit}`,
   random: (limit: number) => `anime:list:random:${limit}`,
   browse: (queryKey: string) => `anime:list:browse:${queryKey}`,
+  animeIndex: () => "anime:list:index",
   search: (queryKey: string) => `anime:list:search:${queryKey}`,
   animeDetail: (slug: string) => `anime:detail:${slug}`,
   episodeDetail: (animeSlug: string, episodeSlug: string) =>
