@@ -217,6 +217,52 @@ function buildOrderBy(
   }
 }
 
+function isActivitySort(sortBy: string) {
+  return sortBy === "updatedat" || sortBy === "latest";
+}
+
+async function getActivityRankedAnimeIds({
+  where,
+  order,
+  skip,
+  take,
+}: {
+  where: Prisma.AnimeWhereInput;
+  order: "asc" | "desc";
+  skip: number;
+  take: number;
+}) {
+  const rows = await prisma.anime.findMany({
+    where,
+    select: {
+      id: true,
+      createdAt: true,
+      episodes: {
+        select: { createdAt: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 1,
+      },
+    },
+  });
+
+  return rows
+    .map((anime) => {
+      const latestEpisodeAt = anime.episodes[0]?.createdAt;
+      const activityAt =
+        latestEpisodeAt && latestEpisodeAt > anime.createdAt
+          ? latestEpisodeAt
+          : anime.createdAt;
+      return { id: anime.id, activityAt };
+    })
+    .sort((left, right) => {
+      const diff = left.activityAt.getTime() - right.activityAt.getTime();
+      if (diff !== 0) return order === "asc" ? diff : -diff;
+      return order === "asc" ? left.id - right.id : right.id - left.id;
+    })
+    .slice(skip, skip + take)
+    .map((item) => item.id);
+}
+
 function normalizeComparable(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
 }
@@ -574,9 +620,11 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
 
     const where: Prisma.AnimeWhereInput =
       filters.length > 0 ? { AND: filters } : {};
+    const activitySort = isActivitySort(sortBy);
 
     const cacheKey = CACHE_KEYS.browse(
       buildQueryKey({
+        sortMode: activitySort ? "activity-v2" : "field",
         keyword,
         genres,
         tags,
@@ -601,45 +649,60 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       const payload =
         cached ??
         (await (async (): Promise<BrowsePayload> => {
-          const [total, animes] = await Promise.all([
-            prisma.anime.count({ where }),
-            prisma.anime.findMany({
-              where,
-              orderBy: buildOrderBy(sortBy, order),
-              skip,
-              take: limit,
-              select: {
-                id: true,
-                slug: true,
-                title: true,
-                thumbnail: true,
-                bigCover: true,
-                status: true,
-                type: true,
-                studio: true,
-                rating: true,
-                followed: true,
-                totalEpisodes: true,
-                genres: {
-                  select: {
-                    genre: {
-                      select: {
-                        name: true,
-                      },
+          const total = await prisma.anime.count({ where });
+          const ids = activitySort
+            ? await getActivityRankedAnimeIds({
+                where,
+                order,
+                skip,
+                take: limit,
+              })
+            : null;
+
+          const animes = await prisma.anime.findMany({
+            where: ids ? { id: { in: ids } } : where,
+            ...(!ids
+              ? { orderBy: buildOrderBy(sortBy, order), skip, take: limit }
+              : {}),
+            select: {
+              id: true,
+              slug: true,
+              title: true,
+              thumbnail: true,
+              bigCover: true,
+              status: true,
+              type: true,
+              studio: true,
+              rating: true,
+              followed: true,
+              totalEpisodes: true,
+              genres: {
+                select: {
+                  genre: {
+                    select: {
+                      name: true,
                     },
                   },
                 },
-                _count: {
-                  select: {
-                    episodes: true,
-                  },
+              },
+              _count: {
+                select: {
+                  episodes: true,
                 },
               },
-            }),
-          ]);
+            },
+          });
+
+          const orderedAnimes = ids
+            ? ids
+                .map((id) => animes.find((anime) => anime.id === id))
+                .filter((anime): anime is NonNullable<typeof anime> =>
+                  Boolean(anime),
+                )
+            : animes;
 
           const result: BrowsePayload = {
-            items: animes.map((anime) =>
+            items: orderedAnimes.map((anime) =>
               formatAnimeCard(anime, {
                 includeBigCover: true,
                 includeStats: true,
