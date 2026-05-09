@@ -49,6 +49,36 @@ function toArray(value: string | undefined) {
     .filter(Boolean);
 }
 
+function normalizeStartWith(value: string | undefined) {
+  const normalized = value?.trim().toUpperCase();
+  if (!normalized) return null;
+  if (normalized === "#") return "#";
+
+  const letter = normalized.charAt(0);
+  return /^[A-Z]$/.test(letter) ? letter : null;
+}
+
+function buildStartWithFilter(startWith: string) {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  if (startWith === "#") {
+    return {
+      NOT: {
+        OR: letters.flatMap((letter) => [
+          { title: { startsWith: letter } },
+          { title: { startsWith: letter.toLowerCase() } },
+        ]),
+      },
+    } satisfies Prisma.AnimeWhereInput;
+  }
+
+  return {
+    OR: [
+      { title: { startsWith: startWith } },
+      { title: { startsWith: startWith.toLowerCase() } },
+    ],
+  } satisfies Prisma.AnimeWhereInput;
+}
+
 type EpisodeAccessInput = {
   id: number;
   number: number;
@@ -461,6 +491,10 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       status?: string;
       type?: string;
       studio?: string;
+      startWith?: string;
+      startwith?: string;
+      startsWith?: string;
+      startswith?: string;
       sortBy?: string;
       sortby?: string;
       order?: string;
@@ -474,6 +508,9 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
     const status = parseStatus(query.status);
     const type = query.type?.trim();
     const studio = query.studio?.trim();
+    const startWith = normalizeStartWith(
+      query.startWith ?? query.startwith ?? query.startsWith ?? query.startswith,
+    );
     const sortBy = (query.sortBy ?? query.sortby ?? "updatedAt").toLowerCase();
     const order = query.order?.toLowerCase() === "asc" ? "asc" : "desc";
     const page = toPositiveInt(query.page, 1);
@@ -531,6 +568,10 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       filters.push({ studio: { equals: studio } });
     }
 
+    if (startWith) {
+      filters.push(buildStartWithFilter(startWith));
+    }
+
     const where: Prisma.AnimeWhereInput =
       filters.length > 0 ? { AND: filters } : {};
 
@@ -542,6 +583,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         status,
         type,
         studio,
+        startWith,
         sortBy,
         order,
         page,
@@ -623,6 +665,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           status,
           type: type || null,
           studio: studio || null,
+          startWith,
           sortBy,
           order,
           cache: cached ? "hit" : "miss",
