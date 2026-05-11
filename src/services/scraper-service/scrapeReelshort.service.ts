@@ -1,6 +1,5 @@
 import * as cheerio from "cheerio";
 import { badRequest } from "../../utils/http-error";
-import { fetchReelshortPlayInfo, ReelshortPlayInfoItem } from "./reelshortClient";
 
 export const REELSHORT_PROVIDER_CODE = "rls";
 
@@ -355,34 +354,6 @@ function collectM3u8Urls(html: string, data: ReelshortPageData | null) {
   return Array.from(urls.values());
 }
 
-function parsePlayInfoOptions(
-  items: ReelshortPlayInfoItem[],
-  currentUrl: string | null,
-): ReelshortPlaylist[] {
-  const h264Items = items.filter((item) => item.MultiBit === 1 || item.MultiBit === "1");
-  const sourceItems = h264Items.length > 0 ? h264Items : items;
-
-  const playlists: ReelshortPlaylist[] = [];
-
-  for (const item of sourceItems) {
-      const url = asString(item.PlayURL);
-    if (!url?.includes(".m3u8")) continue;
-      const normalizedUrl = normalizeM3u8Url(url);
-
-      const definition = normalizeDefinition(item.Dpi);
-    playlists.push({
-      quality: definition ?? getM3u8Quality(url),
-      definition,
-      isCurrent: normalizedUrl === currentUrl,
-      url: normalizedUrl,
-      bitrate: asNumber(item.Bitrate),
-      codec: asString(item.Encode),
-    });
-  }
-
-  return playlists;
-}
-
 function getQualityCandidates(playlists: ReelshortPlaylist[]) {
   const candidates = new Map(playlists.map((item) => [item.url, item]));
 
@@ -434,9 +405,7 @@ async function parsePlaylists(
 ) {
   const currentUrl = asString(data?.video_url);
   const explicitOptions = parseQualityOptions($, html);
-  const playInfoOptions = await fetchReelshortPlayInfo(asString(data?.book_id));
   const rawUrls = [
-    ...parsePlayInfoOptions(playInfoOptions, currentUrl),
     ...explicitOptions,
     ...collectM3u8Urls(html, data),
   ];
