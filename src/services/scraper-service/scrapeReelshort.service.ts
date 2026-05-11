@@ -1,5 +1,10 @@
 import * as cheerio from "cheerio";
 import { badRequest } from "../../utils/http-error";
+import {
+  fetchReelshortChapterApiDetail,
+  type ReelshortPlayInfoItem,
+  type ReelshortChapterApiDetail,
+} from "./reelshortClient";
 
 export const REELSHORT_PROVIDER_CODE = "rls";
 
@@ -92,6 +97,9 @@ export type ReelshortEpisodeDetail = {
   thumbnail: string | null;
   playlistUrl: string | null;
   playlists: ReelshortPlaylist[];
+  isLocked: boolean | null;
+  unlockCost: number | null;
+  hasSignedPlayInfo: boolean;
 };
 
 const REELSHORT_ORIGIN = "https://www.reelshort.com";
@@ -269,6 +277,15 @@ function normalizeDefinition(value: unknown) {
   return `${Math.trunc(numeric)}P`;
 }
 
+function normalizeDefinitionLabel(value: unknown) {
+  return normalizeDefinition(value) ?? asString(value);
+}
+
+function parseBitrate(value: unknown) {
+  const bitrate = asNumber(value);
+  return bitrate ? Math.round(bitrate * 1000) : null;
+}
+
 function parseBooleanAttr(value: string | undefined) {
   return value === "true" || value === "selected";
 }
@@ -354,6 +371,36 @@ function collectM3u8Urls(html: string, data: ReelshortPageData | null) {
   return Array.from(urls.values());
 }
 
+function parsePlayInfoPlaylists(items: ReelshortPlayInfoItem[]) {
+  const preferred = new Map<string, ReelshortPlaylist>();
+
+  for (const item of items) {
+    const url = asString(item.PlayURL);
+    if (!url || !url.includes(".m3u8")) continue;
+
+    const definition = normalizeDefinitionLabel(item.Dpi);
+    const key = definition ?? getM3u8Quality(url);
+    const playlist: ReelshortPlaylist = {
+      quality: definition ?? getM3u8Quality(url),
+      definition,
+      isCurrent: Boolean(item.MultiBit),
+      url: normalizeM3u8Url(url),
+      bitrate: parseBitrate(item.Bitrate),
+      codec: asString(item.Encode),
+    };
+    const current = preferred.get(key);
+    const currentCodec = current?.codec?.toLowerCase();
+    const nextCodec = playlist.codec?.toLowerCase();
+    const shouldReplace =
+      !current ||
+      (currentCodec !== "h264" && nextCodec === "h264") ||
+      (!current.isCurrent && playlist.isCurrent);
+    if (shouldReplace) preferred.set(key, playlist);
+  }
+
+  return Array.from(preferred.values());
+}
+
 function getQualityCandidates(playlists: ReelshortPlaylist[]) {
   const candidates = new Map(playlists.map((item) => [item.url, item]));
 
@@ -402,10 +449,14 @@ async function parsePlaylists(
   html: string,
   $: cheerio.CheerioAPI,
   data: ReelshortPageData | null,
+  sourceUrl: URL,
+  locale: string,
+  chapterApiDetail: ReelshortChapterApiDetail | null,
 ) {
-  const currentUrl = asString(data?.video_url);
+  const playInfoOptions = parsePlayInfoPlaylists(chapterApiDetail?.playInfo ?? []);
   const explicitOptions = parseQualityOptions($, html);
   const rawUrls = [
+    ...playInfoOptions,
     ...explicitOptions,
     ...collectM3u8Urls(html, data),
   ];
@@ -509,6 +560,13 @@ export async function scrapeReelshortEpisodeDetail(
   const data = getPageData(nextData);
   const pageProps = getPageProps(nextData);
   const slug = getSlug(sourceUrl, nextData);
+  const locale = getLocale(sourceUrl, nextData);
+  const chapterApiDetail = await fetchReelshortChapterApiDetail({
+    bookId: asString(data?.book_id),
+    chapterId: asString(data?.chapter_id),
+    referer: sourceUrl.toString(),
+    locale,
+  });
   const bookTitle = cleanTitle(
     asString(data?.book_title) ||
       getMeta($, 'meta[property="og:title"]') ||
@@ -518,7 +576,7 @@ export async function scrapeReelshortEpisodeDetail(
   const episodeLabel = asString(data?.episode) || asString(pageProps?.episode);
   const episodeNumber = asNumber(data?.serial_number) || asNumber(pageProps?.serial_number);
   const title = episodeLabel && bookTitle ? `${episodeLabel} - ${bookTitle}` : bookTitle;
-  const playlists = await parsePlaylists(html, $, data);
+  const playlists = await parsePlaylists(html, $, data, sourceUrl, locale, chapterApiDetail);
   const primaryUrl = asString(data?.video_url);
 
   if (!title) {
@@ -542,5 +600,8 @@ export async function scrapeReelshortEpisodeDetail(
       getMeta($, 'meta[name="twitter:image"]'),
     playlistUrl: primaryUrl || playlists[0]?.url || null,
     playlists,
+    isLocked: chapterApiDetail?.isLocked ?? null,
+    unlockCost: chapterApiDetail?.unlockCost ?? null,
+    hasSignedPlayInfo: Boolean(chapterApiDetail?.playInfo.length),
   };
 }
