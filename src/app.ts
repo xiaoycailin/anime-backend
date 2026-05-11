@@ -53,6 +53,7 @@ function isAllowedCorsOrigin(origin: string | undefined) {
 export function buildApp() {
   const app = Fastify({
     trustProxy: true,
+    maxParamLength: 512,
     logger: {
       transport: {
         target: "pino-pretty",

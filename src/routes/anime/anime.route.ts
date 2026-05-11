@@ -1770,108 +1770,117 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      const episode = await prisma.episode.findFirst({
+      const episodeDetailSelect = {
+        id: true,
+        slug: true,
+        number: true,
+        title: true,
+        sub: true,
+        date: true,
+        createdAt: true,
+        views: true,
+        skipIntroSeconds: true,
+        skipOutroSeconds: true,
+        sourceProvider: true,
+        sourceVideoId: true,
+        servers: {
+          orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
+          select: {
+            id: true,
+            label: true,
+            value: true,
+            isPrimary: true,
+          },
+        },
+        subtitles: {
+          orderBy: [{ serverUrl: "asc" }, { language: "asc" }],
+          select: {
+            id: true,
+            episodeId: true,
+            serverUrl: true,
+            language: true,
+            label: true,
+            fileUrl: true,
+            format: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+        subtitleTracks: {
+          orderBy: [{ serverUrl: "asc" }, { language: "asc" }],
+          select: {
+            id: true,
+            episodeId: true,
+            serverUrl: true,
+            language: true,
+            label: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+        anime: {
+          select: {
+            id: true,
+            slug: true,
+            title: true,
+            thumbnail: true,
+            bigCover: true,
+            status: true,
+            studio: true,
+            type: true,
+            totalEpisodes: true,
+            skipIntroSeconds: true,
+            skipOutroSeconds: true,
+            episodes: {
+              orderBy: [{ number: "asc" }, { id: "asc" }],
+              select: {
+                id: true,
+                slug: true,
+                number: true,
+                title: true,
+                sub: true,
+                date: true,
+              },
+            },
+            genres: {
+              select: {
+                genre: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+            tags: {
+              select: {
+                tag: {
+                  select: {
+                    slug: true,
+                    label: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      } satisfies Prisma.EpisodeSelect;
+
+      let episode = await prisma.episode.findFirst({
         where: {
           slug: episodeSlug,
           anime: {
             slug: animeSlug,
           },
         },
-        select: {
-          id: true,
-          slug: true,
-          number: true,
-          title: true,
-          sub: true,
-          date: true,
-          createdAt: true,
-          views: true,
-          skipIntroSeconds: true,
-          skipOutroSeconds: true,
-          sourceProvider: true,
-          sourceVideoId: true,
-          servers: {
-            orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
-            select: {
-              id: true,
-              label: true,
-              value: true,
-              isPrimary: true,
-            },
-          },
-          subtitles: {
-            orderBy: [{ serverUrl: "asc" }, { language: "asc" }],
-            select: {
-              id: true,
-              episodeId: true,
-              serverUrl: true,
-              language: true,
-              label: true,
-              fileUrl: true,
-              format: true,
-              createdAt: true,
-              updatedAt: true,
-            },
-          },
-          subtitleTracks: {
-            orderBy: [{ serverUrl: "asc" }, { language: "asc" }],
-            select: {
-              id: true,
-              episodeId: true,
-              serverUrl: true,
-              language: true,
-              label: true,
-              createdAt: true,
-              updatedAt: true,
-            },
-          },
-          anime: {
-            select: {
-              id: true,
-              slug: true,
-              title: true,
-              thumbnail: true,
-              bigCover: true,
-              status: true,
-              studio: true,
-              type: true,
-              totalEpisodes: true,
-              skipIntroSeconds: true,
-              skipOutroSeconds: true,
-              episodes: {
-                orderBy: [{ number: "asc" }, { id: "asc" }],
-                select: {
-                  id: true,
-                  slug: true,
-                  number: true,
-                  title: true,
-                  sub: true,
-                  date: true,
-                },
-              },
-              genres: {
-                select: {
-                  genre: {
-                    select: {
-                      name: true,
-                    },
-                  },
-                },
-              },
-              tags: {
-                select: {
-                  tag: {
-                    select: {
-                      slug: true,
-                      label: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+        select: episodeDetailSelect,
       });
+
+      if (!episode) {
+        episode = await prisma.episode.findUnique({
+          where: { slug: episodeSlug },
+          select: episodeDetailSelect,
+        });
+      }
 
       if (!episode) {
         return sendError(reply, {
