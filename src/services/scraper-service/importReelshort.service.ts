@@ -82,7 +82,7 @@ function buildServerValue(detail: ReelshortEpisodeDetail | null) {
 
   const rows = [...byUrl.values()]
     .sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality))
-    .map((playlist) => `${playlist.definition ?? playlist.quality}:${playlist.url}`);
+    .map((playlist) => `${playlist.definition ?? playlistLabelFromUrl(playlist.url)}:${playlist.url}`);
 
   if (rows.length > 0) return rows.join("\n");
 
