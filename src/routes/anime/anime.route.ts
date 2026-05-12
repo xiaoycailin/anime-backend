@@ -274,6 +274,14 @@ function countMatches(currentValues: string[], candidateValues: string[]) {
   }, 0);
 }
 
+function buildTypeFilter(type: string): Prisma.AnimeWhereInput {
+  const trimmed = type.trim();
+  const lower = trimmed.toLowerCase();
+  const title = lower.charAt(0).toUpperCase() + lower.slice(1);
+  const variants = [...new Set([trimmed, lower, title, trimmed.toUpperCase()])];
+  return { OR: variants.map((value) => ({ type: { equals: value } })) };
+}
+
 function getRandomTieBreaker() {
   return Math.random();
 }
@@ -858,9 +866,12 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/popular", async (request, reply) => {
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; type?: string };
     const limit = Math.min(toPositiveInt(query.limit, 12), 50);
-    const cacheKey = CACHE_KEYS.popular(limit);
+    const type = query.type?.trim();
+    const normalizedType = type ? type.toLowerCase() : "all";
+    const cacheKey = CACHE_KEYS.popular(limit, normalizedType);
+    const where = type ? buildTypeFilter(type) : {};
 
     try {
       setPublicCache(reply, PUBLIC_CACHE.FAST);
@@ -874,6 +885,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           data: cached,
           meta: {
             limit,
+            type: type ?? null,
             ranking: ["followed desc", "rating desc", "updatedAt desc"],
             cache: "hit",
           },
@@ -881,6 +893,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const animes = await prisma.anime.findMany({
+        where,
         orderBy: [
           { followed: "desc" },
           { rating: "desc" },
@@ -930,6 +943,7 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         data,
         meta: {
           limit,
+          type: type ?? null,
           ranking: ["followed desc", "rating desc", "updatedAt desc"],
           cache: "miss",
         },

@@ -23,7 +23,7 @@ export const CACHE_TTL = {
 
 export const CACHE_KEYS = {
   home: () => "anime:list:home",
-  popular: (limit: number) => `anime:list:popular:${limit}`,
+  popular: (limit: number, type = "all") => `anime:list:popular:${type}:${limit}`,
   trending: (limit: number) => `anime:list:trending:${limit}`,
   trendingWeekly: (limit: number) => `anime:list:trending-weekly:${limit}`,
   banners: (queryKey: string) => `anime:list:banners:${queryKey}`,
