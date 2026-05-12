@@ -1729,8 +1729,21 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
         cached &&
         Object.prototype.hasOwnProperty.call(cached, "sourceProvider") &&
         Object.prototype.hasOwnProperty.call(cached, "sourceVideoId");
+      const cacheHasAnimeSynopsis =
+        cached?.anime &&
+        typeof cached.anime === "object" &&
+        Object.prototype.hasOwnProperty.call(cached.anime, "synopsis");
+      const cacheHasAnimeRating =
+        cached?.anime &&
+        typeof cached.anime === "object" &&
+        Object.prototype.hasOwnProperty.call(cached.anime, "rating");
 
-      if (cached && cacheHasSourceFields) {
+      if (
+        cached &&
+        cacheHasSourceFields &&
+        cacheHasAnimeSynopsis &&
+        cacheHasAnimeRating
+      ) {
         const publicData = stripPublicSubtitleTrackCues(cached);
         const accessEpisode = episodeAccessInput(publicData);
 
@@ -1823,6 +1836,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
             id: true,
             slug: true,
             title: true,
+            synopsis: true,
+            rating: true,
             thumbnail: true,
             bigCover: true,
             status: true,
@@ -2165,6 +2180,8 @@ export const animeRoutes: FastifyPluginAsync = async (app) => {
           id: episode.anime.id,
           slug: episode.anime.slug,
           title: normalizeTitle(episode.anime.title),
+          synopsis: episode.anime.synopsis,
+          rating: episode.anime.rating,
           thumbnail: episode.anime.thumbnail ?? "",
           bigCover: episode.anime.bigCover ?? "",
           status: episode.anime.status,
