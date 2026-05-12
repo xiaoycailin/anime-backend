@@ -28,7 +28,7 @@ export const CACHE_KEYS = {
   trendingWeekly: (limit: number) => `anime:list:trending-weekly:${limit}`,
   banners: (queryKey: string) => `anime:list:banners:${queryKey}`,
   newRelease: (limit: number) => `anime:list:new-release:${limit}`,
-  latestEpisodes: (limit: number) => `episode:list:latest:${limit}`,
+  latestEpisodes: (limit: number, type = "all") => `episode:list:latest:${type}:${limit}`,
   random: (limit: number) => `anime:list:random:${limit}`,
   browse: (queryKey: string) => `anime:list:browse:${queryKey}`,
   animeIndex: () => "anime:list:index",

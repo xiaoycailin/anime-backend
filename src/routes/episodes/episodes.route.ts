@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import type { ReactionType } from "@prisma/client";
+import type { Prisma, ReactionType } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { addExp } from "../../services/exp.service";
 import { createRoleNotification } from "../../services/notification.service";
@@ -34,6 +34,14 @@ function formatRelativeTime(date: Date) {
 
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays}h lalu`;
+}
+
+function buildAnimeTypeFilter(type: string): Prisma.AnimeWhereInput {
+  const trimmed = type.trim();
+  const lower = trimmed.toLowerCase();
+  const title = lower.charAt(0).toUpperCase() + lower.slice(1);
+  const variants = [...new Set([trimmed, lower, title, trimmed.toUpperCase()])];
+  return { OR: variants.map((value) => ({ type: { equals: value } })) };
 }
 
 async function optionalUserId(
@@ -78,9 +86,14 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
   ] as const;
 
   app.get("/latest", async (request, reply) => {
-    const query = request.query as { limit?: string };
+    const query = request.query as { limit?: string; type?: string };
     const limit = Math.min(toPositiveInt(query.limit, 10), 50);
-    const cacheKey = CACHE_KEYS.latestEpisodes(limit);
+    const type = query.type?.trim();
+    const normalizedType = type ? type.toLowerCase() : "all";
+    const cacheKey = CACHE_KEYS.latestEpisodes(limit, normalizedType);
+    const where: Prisma.EpisodeWhereInput = type
+      ? { anime: buildAnimeTypeFilter(type) }
+      : {};
 
     try {
       setPublicCache(reply, PUBLIC_CACHE.FAST);
@@ -101,11 +114,12 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
         return ok(reply, {
           message: "Latest episodes fetched successfully",
           data: cached,
-          meta: { limit, cache: "hit" },
+          meta: { limit, type: type ?? null, cache: "hit" },
         });
       }
 
       const episodes = await prisma.episode.findMany({
+        where,
         orderBy: [{ createdAt: "desc" }],
         distinct: ["animeId"],
         take: limit,
@@ -143,7 +157,10 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
           formatRelativeTime(item.createdAt) ||
           formatRelativeTime(item.anime.updatedAt),
         thumbnail: item.thumbnail ?? item.anime.thumbnail,
-        href: `/anime/${item.anime.slug}/${item.slug}`,
+        href:
+          item.anime.type?.toLowerCase() === "short"
+            ? `/short/${item.anime.slug}/${item.slug}`
+            : `/anime/${item.anime.slug}/${item.slug}`,
         animeType: item.anime.type,
         totalEpisodes: item.anime.totalEpisodes,
         episodeCount: item.anime._count.episodes,
@@ -154,7 +171,7 @@ export const episodesRoutes: FastifyPluginAsync = async (app) => {
       return ok(reply, {
         message: "Latest episodes fetched successfully",
         data,
-        meta: { limit, cache: "miss" },
+        meta: { limit, type: type ?? null, cache: "miss" },
       });
     } catch (error) {
       request.log.error(error);
